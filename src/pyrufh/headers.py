@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import httpx
+    from collections.abc import Mapping
 
 # The current draft interop version as defined in Appendix B of the spec.
 DRAFT_INTEROP_VERSION = 8
@@ -84,7 +84,7 @@ class UploadState:
     limits: UploadLimits | None = None
 
 
-def parse_upload_offset(headers: httpx.Headers) -> int | None:
+def parse_upload_offset(headers: Mapping[str, str]) -> int | None:
     """Parse the Upload-Offset header field (Item, Integer)."""
     value = headers.get("upload-offset")
     if value is None:
@@ -98,7 +98,7 @@ def parse_upload_offset(headers: httpx.Headers) -> int | None:
         return None
 
 
-def parse_upload_complete(headers: httpx.Headers) -> bool | None:
+def parse_upload_complete(headers: Mapping[str, str]) -> bool | None:
     """Parse the Upload-Complete header field (Item, Boolean).
 
     SF Booleans are represented as ?1 (true) or ?0 (false).
@@ -114,7 +114,7 @@ def parse_upload_complete(headers: httpx.Headers) -> bool | None:
     return None
 
 
-def parse_upload_length(headers: httpx.Headers) -> int | None:
+def parse_upload_length(headers: Mapping[str, str]) -> int | None:
     """Parse the Upload-Length header field (Item, Integer)."""
     value = headers.get("upload-length")
     if value is None:
@@ -127,7 +127,7 @@ def parse_upload_length(headers: httpx.Headers) -> int | None:
         return None
 
 
-def parse_upload_limits(headers: httpx.Headers) -> UploadLimits | None:
+def parse_upload_limits(headers: Mapping[str, str]) -> UploadLimits | None:
     """Parse the Upload-Limit header field (Dictionary)."""
     value = headers.get("upload-limit")
     if value is None:
@@ -135,7 +135,7 @@ def parse_upload_limits(headers: httpx.Headers) -> UploadLimits | None:
     return UploadLimits.from_header(value)
 
 
-def parse_location(headers: httpx.Headers) -> str | None:
+def parse_location(headers: Mapping[str, str]) -> str | None:
     """Return the Location header field value, if present."""
     return headers.get("location")
 
