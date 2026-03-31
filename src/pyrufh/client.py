@@ -7,14 +7,18 @@ Implements draft-ietf-httpbis-resumable-upload-11 client behaviour:
   - Upload cancellation (§4.5)
   - Optimistic upload  (§12.1) with transparent resumption on interruption
   - Careful upload     (§12.2)
+  - 104 Upload Resumption Supported interim response handling (§5)
 """
 
 from __future__ import annotations
 
 import logging
-from typing import BinaryIO
+from typing import TYPE_CHECKING, BinaryIO
 
 import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from .exceptions import (
     CompletedUploadError,
@@ -27,6 +31,7 @@ from .exceptions import (
 )
 from .headers import (
     CONTENT_TYPE_PARTIAL_UPLOAD,
+    UploadLimits,
     build_upload_complete_header,
     build_upload_length_header,
     build_upload_offset_header,
@@ -38,6 +43,7 @@ from .headers import (
     parse_upload_offset,
 )
 from .models import UploadCreationResult, UploadResource
+from .transport import InterimCapturingTransport, InterimResponse
 
 logger = logging.getLogger(__name__)
 
@@ -62,18 +68,31 @@ class RufhClient:
     (upload, upload_carefully) that implement the two upload strategies
     described in §12.
 
+    When no *client* is provided, a new :class:`httpx.Client` is created that
+    uses :class:`~pyrufh.transport.InterimCapturingTransport` so that 104
+    (Upload Resumption Supported) interim responses from the server are
+    captured and surfaced in the API (see :meth:`create_upload` and
+    :meth:`append`).
+
     Parameters
     ----------
     client:
-        An :class:`httpx.Client` instance to use for HTTP requests. If not
-        provided, a new client is created. The caller is responsible for
-        closing it.
+        An :class:`httpx.Client` instance to use for HTTP requests.  If not
+        provided, a new client with :class:`~pyrufh.transport.InterimCapturingTransport`
+        is created automatically.  The caller is responsible for closing an
+        externally-provided client.
     chunk_size:
-        Number of bytes to read per chunk when streaming uploads. Defaults to
+        Number of bytes to read per chunk when streaming uploads.  Defaults to
         ``DEFAULT_CHUNK_SIZE`` (1 MiB).
     max_retries:
         Number of times to retry offset retrieval and append after a 5xx or
         connectivity error before giving up.
+    on_interim_response:
+        Optional callback invoked for every 104 (Upload Resumption Supported)
+        interim response received during upload creation or append requests.
+        Only called when using the built-in transport (i.e. when *client* is
+        not provided externally).  The callback receives a single
+        :class:`~pyrufh.transport.InterimResponse` argument.
     """
 
     def __init__(
@@ -81,11 +100,39 @@ class RufhClient:
         client: httpx.Client | None = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         max_retries: int = 3,
+        on_interim_response: Callable[[InterimResponse], None] | None = None,
     ) -> None:
-        self._client = client or httpx.Client()
-        self._owns_client = client is None
+        self._interim_responses: list[InterimResponse] = []
+        self._on_interim_response = on_interim_response
+
+        if client is not None:
+            self._client = client
+            self._owns_client = False
+        else:
+            # Build a client with InterimCapturingTransport so that 104 responses
+            # are captured automatically during normal usage.
+            #
+            # Note: when tests pass an explicit *client* that wraps a mock transport
+            # (e.g. via pytest-httpx), that path is used instead and interim-response
+            # capture depends on the mock being able to simulate 104 responses.
+            transport = InterimCapturingTransport(
+                on_interim=self._handle_interim_response,
+            )
+            self._client = httpx.Client(transport=transport)
+            self._owns_client = True
+
         self.chunk_size = chunk_size
         self.max_retries = max_retries
+
+    # ------------------------------------------------------------------
+    # Internal interim-response handler
+    # ------------------------------------------------------------------
+
+    def _handle_interim_response(self, interim: InterimResponse) -> None:
+        """Store an interim response and forward it to the user callback."""
+        self._interim_responses.append(interim)
+        if self._on_interim_response is not None:
+            self._on_interim_response(interim)
 
     # ------------------------------------------------------------------
     # Context-manager support
@@ -183,10 +230,16 @@ class RufhClient:
 
         logger.debug("Creating upload: %s %s (complete=%s)", method, url, complete)
 
+        # Clear any previously captured interim responses before this request.
+        self._interim_responses.clear()
+
         try:
             response = self._client.request(method, url, content=body, headers=headers)
         except httpx.RequestError as exc:
             raise UploadCreationError(f"Network error during upload creation: {exc}") from exc
+
+        # Snapshot the interim responses received during this specific request.
+        captured_interim = list(self._interim_responses)
 
         # ---- Interpret the final response (§4.2.1) -------------------------
 
@@ -204,6 +257,9 @@ class RufhClient:
             )
 
         if response.status_code >= 500:
+            # Per §4.2.1, the client MAY resume if it received a 104 with the
+            # upload resource URI.  We store the 5xx response for the caller;
+            # they can inspect captured_interim for a Location header.
             raise UploadCreationError(
                 f"Server error during upload creation: {response.status_code}",
                 status_code=response.status_code,
@@ -215,6 +271,20 @@ class RufhClient:
         upload_offset = parse_upload_offset(response.headers)
         upload_length = parse_upload_length(response.headers)
         limits = parse_upload_limits(response.headers)
+
+        # ---- Merge information from 104 interim responses (§5) ---------------
+        # Per §4.2.2, the first 104 MUST include the Location header.
+        # Final responses with Upload-Complete: ?1 are exempt from Location.
+        # We use the 104 Location as a fallback when the final response omits it.
+        interim_location = self._first_interim_location(captured_interim)
+        interim_limits: UploadLimits | None = self._latest_interim_limits(captured_interim)
+
+        if location is None and interim_location is not None:
+            location = interim_location
+            logger.debug("Using Location from 104 interim response: %s", location)
+
+        if limits is None and interim_limits is not None:
+            limits = interim_limits
 
         # When Upload-Complete: ?1 is in the final response, the upload is done
         # and the response is from the targeted resource (§4.2.1, §4.4.1).
@@ -232,9 +302,13 @@ class RufhClient:
                 limits=limits,
                 final_response=response,
             )
-            return UploadCreationResult(upload_resource=resource, final_response=response)
+            return UploadCreationResult(
+                upload_resource=resource,
+                final_response=response,
+                interim_responses=captured_interim,
+            )
 
-        # Not complete yet - Location MUST be present.
+        # Not complete yet - Location MUST be present (from final or 104 response).
         if location is None:
             raise UploadCreationError(
                 "Server did not return a Location header for the upload resource"
@@ -248,7 +322,10 @@ class RufhClient:
             length=upload_length or length,
             limits=limits,
         )
-        return UploadCreationResult(upload_resource=resource)
+        return UploadCreationResult(
+            upload_resource=resource,
+            interim_responses=captured_interim,
+        )
 
     # ------------------------------------------------------------------
     # §4.3  Offset Retrieval
@@ -392,10 +469,16 @@ class RufhClient:
             complete,
         )
 
+        # Clear any previously captured interim responses before this request.
+        self._interim_responses.clear()
+
         try:
             response = self._client.patch(upload_resource.uri, content=body, headers=headers)
         except httpx.RequestError as exc:
             raise UploadAppendError(f"Network error during upload append: {exc}") from exc
+
+        # Snapshot the interim responses received during this specific request.
+        captured_interim = list(self._interim_responses)
 
         # ---- Handle error responses (§4.4.1) --------------------------------
 
@@ -428,11 +511,19 @@ class RufhClient:
             )
 
         # ---- Update local state from the response ---------------------------
+        # Priority: final response Upload-Offset > 104 Upload-Offset > inferred offset.
         new_offset = parse_upload_offset(response.headers)
         if new_offset is not None:
             upload_resource.offset = new_offset
         else:
-            upload_resource.offset += content_length
+            # Try the highest Upload-Offset from any 104 interim responses (§4.4.2).
+            # These provide progress information when the final response omits the offset.
+            interim_offset = self._highest_interim_offset(captured_interim)
+            if interim_offset is not None:
+                upload_resource.offset = interim_offset
+            else:
+                # No offset from server at all: infer from bytes sent.
+                upload_resource.offset += content_length
 
         response_complete = parse_upload_complete(response.headers)
         if response_complete is not None:
@@ -631,6 +722,52 @@ class RufhClient:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _first_interim_location(
+        interim_responses: list[InterimResponse],
+    ) -> str | None:
+        """Return the first Location header value found in 104 interim responses."""
+        for interim in interim_responses:
+            loc = interim.get("location")
+            if loc:
+                return loc
+        return None
+
+    @staticmethod
+    def _latest_interim_limits(
+        interim_responses: list[InterimResponse],
+    ) -> UploadLimits | None:
+        """Return the Upload-Limit parsed from the last 104 that carries one, or None."""
+        for interim in reversed(interim_responses):
+            raw = interim.get("upload-limit")
+            if raw is not None:
+                # Build a minimal httpx.Headers so we can reuse the existing parser.
+                mock_headers = httpx.Headers({"upload-limit": raw})
+                result = parse_upload_limits(mock_headers)
+                if result is not None:
+                    return result
+        return None
+
+    @staticmethod
+    def _highest_interim_offset(
+        interim_responses: list[InterimResponse],
+    ) -> int | None:
+        """Return the highest Upload-Offset seen across 104 interim responses, or None.
+
+        Per §4.4.2, 104 interim responses during append carry Upload-Offset to
+        indicate acknowledged bytes.  The highest value is the most recent
+        acknowledgement from the server.
+        """
+        highest: int | None = None
+        for interim in interim_responses:
+            raw = interim.get("upload-offset")
+            if raw is not None:
+                mock_headers = httpx.Headers({"upload-offset": raw})
+                offset = parse_upload_offset(mock_headers)
+                if offset is not None and (highest is None or offset > highest):
+                    highest = offset
+        return highest
 
     def _stream_append(
         self,

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     import httpx
 
     from .headers import UploadLimits
+    from .transport import InterimResponse
 
 
 @dataclass
@@ -58,6 +59,12 @@ class UploadCreationResult:
 
     #: Set when the upload was completed in the creation request itself.
     final_response: httpx.Response | None = None
+
+    #: 104 (Upload Resumption Supported) interim responses received during
+    #: the creation request, in the order they arrived.  Empty when the
+    #: underlying transport does not support interim response capture or when
+    #: the server did not send any.
+    interim_responses: list[InterimResponse] = field(default_factory=list)
 
     @property
     def complete(self) -> bool:
