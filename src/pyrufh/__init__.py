@@ -18,6 +18,18 @@ For chunked / careful upload::
             data=open("large_file.bin", "rb"),
             chunk_size=5 * 1024 * 1024,  # 5 MiB chunks
         )
+
+To receive 104 (Upload Resumption Supported) interim responses use
+:class:`~pyrufh.transport.InterimCapturingTransport`::
+
+    from pyrufh import RufhClient, InterimCapturingTransport, InterimResponse
+
+    received: list[InterimResponse] = []
+    transport = InterimCapturingTransport(on_interim=received.append)
+    import httpx
+
+    with RufhClient(client=httpx.Client(transport=transport)) as client:
+        response = client.upload("https://example.com/upload", b"data")
 """
 
 from .client import DEFAULT_CHUNK_SIZE, RufhClient
@@ -41,6 +53,7 @@ from .headers import (
     UploadLimits,
 )
 from .models import UploadCreationResult, UploadResource
+from .transport import InterimCapturingTransport, InterimResponse
 
 __all__ = [
     "CONTENT_TYPE_PARTIAL_UPLOAD",
@@ -48,6 +61,8 @@ __all__ = [
     "DRAFT_INTEROP_VERSION",
     "CompletedUploadError",
     "InconsistentLengthError",
+    "InterimCapturingTransport",
+    "InterimResponse",
     "MismatchingOffsetError",
     "OffsetRetrievalError",
     "RufhClient",
