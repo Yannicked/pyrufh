@@ -29,6 +29,7 @@ except ImportError as exc:
     ) from exc
 
 from ..core import (
+    DigestMismatchError,
     InMemoryRufhServer,
     RufhServer,
     UploadAlreadyCompleteError,
@@ -39,13 +40,18 @@ from ..core import (
 from ..headers import (
     CONTENT_TYPE_PARTIAL_UPLOAD,
     UploadLimits,
+    build_repr_digest_header,
     build_upload_complete_header,
     build_upload_length_header,
     build_upload_offset_header,
     draft_interop_headers,
+    parse_content_digest,
+    parse_repr_digest,
     parse_upload_complete,
     parse_upload_length,
     parse_upload_offset,
+    parse_want_content_digest,
+    parse_want_repr_digest,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,18 +62,37 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
     body = await request.body()
     complete_header = parse_upload_complete(request.headers)
     length_header = parse_upload_length(request.headers)
+    content_digest = parse_content_digest(request.headers)
+    repr_digest = parse_repr_digest(request.headers)
+    want_repr_digest = parse_want_repr_digest(request.headers)
+    want_content_digest = parse_want_content_digest(request.headers)
 
     complete = complete_header if complete_header is not None else False
 
     uri = f"{request.state.base_url}/uploads/{upload_uri}"
-    upload, status = request.state.server.create_upload(
-        body,
-        method=request.method,
-        complete=complete,
-        length=length_header,
-        content_type=request.headers.get("content-type"),
-        uri=uri,
-    )
+    try:
+        upload, status = request.state.server.create_upload(
+            body,
+            method=request.method,
+            complete=complete,
+            length=length_header,
+            content_type=request.headers.get("content-type"),
+            uri=uri,
+            content_digest=content_digest,
+            repr_digest=repr_digest,
+            want_repr_digest=want_repr_digest,
+            want_content_digest=want_content_digest,
+        )
+    except DigestMismatchError as e:
+        import base64
+
+        body = (
+            f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch",'
+            f'"title":"Digest mismatch","algorithm":"{e.algorithm}",'
+            f'"expected":"{base64.b64encode(e.expected).decode()}",'
+            f'"actual":"{base64.b64encode(e.actual).decode()}"}}'
+        ).encode()
+        return Response(content=body, status_code=400, media_type="application/problem+json")
 
     headers = {
         **draft_interop_headers(),
@@ -78,6 +103,9 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
 
     if upload.length is not None:
         headers["Upload-Length"] = build_upload_length_header(upload.length)
+
+    if upload.repr_digest is not None:
+        headers["Repr-Digest"] = build_repr_digest_header(upload.repr_digest)
 
     if upload.limits is not None:
         limit_parts = []
@@ -149,6 +177,8 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
     offset_header = parse_upload_offset(request.headers)
     complete_header = parse_upload_complete(request.headers)
     length_header = parse_upload_length(request.headers)
+    content_digest = parse_content_digest(request.headers)
+    want_repr_digest = parse_want_repr_digest(request.headers)
 
     if offset_header is None:
         return Response(
@@ -165,6 +195,8 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
             upload_offset=offset_header,
             complete=complete,
             upload_length=length_header,
+            content_digest=content_digest,
+            want_repr_digest=want_repr_digest,
         )
     except UploadNotFoundError:
         return Response(
@@ -191,6 +223,16 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
             status_code=400,
             media_type="application/problem+json",
         )
+    except DigestMismatchError as e:
+        import base64
+
+        body = (
+            f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch",'
+            f'"title":"Digest mismatch","algorithm":"{e.algorithm}",'
+            f'"expected":"{base64.b64encode(e.expected).decode()}",'
+            f'"actual":"{base64.b64encode(e.actual).decode()}"}}'
+        ).encode()
+        return Response(content=body, status_code=400, media_type="application/problem+json")
 
     headers = {
         **draft_interop_headers(),
@@ -200,6 +242,9 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
 
     if upload.length is not None:
         headers["Upload-Length"] = build_upload_length_header(upload.length)
+
+    if upload.repr_digest is not None:
+        headers["Repr-Digest"] = build_repr_digest_header(upload.repr_digest)
 
     return Response(content=b"", status_code=200, headers=headers)
 
