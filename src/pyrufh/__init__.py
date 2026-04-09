@@ -32,6 +32,10 @@ To receive 104 (Upload Resumption Supported) interim responses use
         response = client.upload("https://example.com/upload", b"data")
 """
 
+from __future__ import annotations
+
+import importlib.util
+
 from .client import DEFAULT_CHUNK_SIZE, RufhClient
 from .exceptions import (
     CompletedUploadError,
@@ -53,6 +57,14 @@ from .headers import (
     UploadLimits,
 )
 from .models import UploadCreationResult, UploadResource
+from .server import (
+    InMemoryRufhServer,
+    RufhServer,
+    UploadAlreadyCompleteError,
+    UploadLengthMismatchError,
+    UploadNotFoundError,
+    UploadOffsetMismatchError,
+)
 from .transport import InterimCapturingTransport, InterimResponse
 
 __all__ = [
@@ -60,6 +72,7 @@ __all__ = [
     "DEFAULT_CHUNK_SIZE",
     "DRAFT_INTEROP_VERSION",
     "CompletedUploadError",
+    "InMemoryRufhServer",
     "InconsistentLengthError",
     "InterimCapturingTransport",
     "InterimResponse",
@@ -67,14 +80,29 @@ __all__ = [
     "OffsetRetrievalError",
     "RufhClient",
     "RufhError",
+    "RufhServer",
+    "UploadAlreadyCompleteError",
     "UploadAppendError",
     "UploadCancellationError",
     "UploadCreationError",
     "UploadCreationResult",
     "UploadError",
     "UploadInterruptedError",
+    "UploadLengthMismatchError",
     "UploadLimitExceededError",
     "UploadLimits",
+    "UploadNotFoundError",
     "UploadNotResumableError",
+    "UploadOffsetMismatchError",
     "UploadResource",
 ]
+
+if importlib.util.find_spec("fastapi") is not None:
+    from .server.fastapi import make_fastapi_app, setup_fastapi_routes  # noqa: F401
+
+    __all__.extend(["make_fastapi_app", "setup_fastapi_routes"])
+
+if importlib.util.find_spec("flask") is not None:
+    from .server.flask import make_flask_app, setup_flask_routes  # noqa: F401
+
+    __all__.extend(["make_flask_app", "setup_flask_routes"])
