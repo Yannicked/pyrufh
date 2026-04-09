@@ -13,7 +13,6 @@ from pyrufh.headers import (
     build_upload_length_header,
     build_upload_offset_header,
     build_want_content_digest_header,
-    build_want_repr_digest_header,
     compute_digest,
     parse_content_digest,
     parse_repr_digest,

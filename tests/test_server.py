@@ -198,7 +198,6 @@ class TestDigestServer:
         """Server verifies Content-Digest when provided."""
         server = InMemoryRufhServer(base_url="http://example.com")
 
-        sha256 = compute_digest("sha-256", b"hello world")
         wrong_sha256 = compute_digest("sha-256", b"wrong data")
 
         with pytest.raises(DigestMismatchError):
@@ -214,7 +213,7 @@ class TestDigestServer:
 
         sha256 = compute_digest("sha-256", b"hello world")
 
-        upload, status = server.create_upload(
+        upload, _status = server.create_upload(
             b"hello world",
             complete=True,
             content_digest={"sha-256": sha256},
@@ -226,7 +225,7 @@ class TestDigestServer:
         """Server computes Repr-Digest when Want-Repr-Digest is provided and complete."""
         server = InMemoryRufhServer(base_url="http://example.com")
 
-        upload, status = server.create_upload(
+        upload, _status = server.create_upload(
             b"hello world",
             complete=True,
             want_repr_digest={"sha-256": 10},
@@ -240,7 +239,7 @@ class TestDigestServer:
         """Server does not compute Repr-Digest when upload is not complete."""
         server = InMemoryRufhServer(base_url="http://example.com")
 
-        upload, status = server.create_upload(
+        upload, _status = server.create_upload(
             b"hello world",
             complete=False,
             want_repr_digest={"sha-256": 10},
@@ -288,7 +287,6 @@ class TestDigestServer:
         """Server verifies Repr-Digest when provided."""
         server = InMemoryRufhServer(base_url="http://example.com")
 
-        sha256 = compute_digest("sha-256", b"hello world")
         wrong_sha256 = compute_digest("sha-256", b"wrong data")
 
         with pytest.raises(DigestMismatchError):
@@ -304,7 +302,7 @@ class TestDigestServer:
 
         sha256 = compute_digest("sha-256", b"hello world")
 
-        upload, status = server.create_upload(
+        upload, _status = server.create_upload(
             b"hello world",
             complete=True,
             repr_digest={"sha-256": sha256},

@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 
 try:
-    from fastapi import FastAPI, Request, Response  # ty:ignore[unresolved-import]
+    from fastapi import FastAPI, Request, Response
 except ImportError as exc:
     raise ImportError(
         "FastAPI is required for FastAPI integration. Install with: pip install pyrufh[fastapi]"

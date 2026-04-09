@@ -243,7 +243,7 @@ class RufhClient:
             if want_digest is True:
                 want_digest = {"sha-256": 10}
             elif isinstance(want_digest, (list, tuple)):
-                want_digest = {alg: 10 for alg in want_digest}
+                want_digest = dict.fromkeys(want_digest, 10)
             content_digest = {}
             for alg in sorted(want_digest.keys()):
                 if want_digest[alg] > 0:
@@ -492,7 +492,7 @@ class RufhClient:
             if want_digest is True:
                 want_digest = {"sha-256": 10}
             elif isinstance(want_digest, (list, tuple)):
-                want_digest = {alg: 10 for alg in want_digest}
+                want_digest = dict.fromkeys(want_digest, 10)
             content_digest = {}
             for alg in sorted(want_digest.keys()):
                 if want_digest[alg] > 0:

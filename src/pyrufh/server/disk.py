@@ -8,13 +8,14 @@ file locking for safety across multiple processes.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 if TYPE_CHECKING:
     from ..headers import UploadLimits
@@ -164,7 +165,7 @@ class DiskRufhServer(RufhServer):
         lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except (IOError, OSError):
+        except OSError:
             os.close(lock_fd)
             raise
         return lock_fd
@@ -380,7 +381,7 @@ class DiskRufhServer(RufhServer):
                         actual=computed,
                     )
 
-        content_length = len(body)
+        content_length = len(body)  # type: ignore[arg-type]
         inferred_length = length
 
         if complete and inferred_length is None and content_length > 0:
@@ -395,12 +396,12 @@ class DiskRufhServer(RufhServer):
         lock_fd = self._acquire_lock(upload_id)
         try:
             with open(self._data_path(upload_id), "wb") as f:
-                f.write(body)
+                f.write(body)  # type: ignore[arg-type]
                 f.flush()
                 os.fsync(f.fileno())
 
             computed_repr_digest: dict[str, bytes] | None = None
-            if want_repr_digest and complete and len(body) > 0:
+            if want_repr_digest and complete and len(body) > 0:  # type: ignore[arg-type]
                 computed_repr_digest = {}
                 for alg in sorted(want_repr_digest.keys()):
                     if want_repr_digest[alg] > 0:
@@ -517,7 +518,3 @@ class DiskRufhServer(RufhServer):
         self._cleanup_running = False
         if self._cleanup_thread is not None:
             self._cleanup_thread.join(timeout=5)
-
-
-import fcntl
-from typing import BinaryIO

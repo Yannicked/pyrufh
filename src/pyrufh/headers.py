@@ -333,13 +333,21 @@ def compute_digest(algorithm: str, data: bytes | BinaryIO) -> bytes:
     if alg_key in ("sha512", "sha256", "sha1", "md5"):
         return _compute_hash_stream(alg_key, data)
     elif alg_key == "sum":
-        return _unix_sum_stream(data) if hasattr(data, "read") else _unix_sum(data)
+        if isinstance(data, bytes):
+            return _unix_sum(data)
+        return _unix_sum_stream(data)  # type: ignore[arg-type]
     elif alg_key == "cksum":
-        return _unix_cksum_stream(data) if hasattr(data, "read") else _unix_cksum(data)
+        if isinstance(data, bytes):
+            return _unix_cksum(data)
+        return _unix_cksum_stream(data)  # type: ignore[arg-type]
     elif alg_key == "adler":
-        return _adler32_stream(data) if hasattr(data, "read") else _adler32(data)
+        if isinstance(data, bytes):
+            return _adler32(data)
+        return _adler32_stream(data)  # type: ignore[arg-type]
     elif alg_key == "crc32c":
-        return _crc32c_stream(data) if hasattr(data, "read") else _crc32c(data)
+        if isinstance(data, bytes):
+            return _crc32c(data)
+        return _crc32c_stream(data)  # type: ignore[arg-type]
     else:
         raise ValueError(f"Unsupported digest algorithm: {algorithm}")
 
@@ -422,8 +430,6 @@ def _adler32(data: bytes) -> bytes:
 
 def _adler32_stream(data: BinaryIO) -> bytes:
     """Compute Adler-32 checksum from a file-like object."""
-    import zlib
-
     a = 1
     b = 0
     while True:
