@@ -524,3 +524,192 @@ class TestCarefulUpload:
         # Second PATCH: 4 bytes, complete
         assert len(requests[2].content) == 4
         assert requests[2].headers["upload-complete"] == "?1"
+
+
+# ---------------------------------------------------------------------------
+# RFC 9530 Digest Integration
+# ---------------------------------------------------------------------------
+
+
+class TestDigestCreation:
+    def test_want_digest_true_enables_sha256(self, httpx_mock: HTTPXMock):
+        """When want_digest=True, client uses sha-256."""
+        httpx_mock.add_response(
+            method="POST",
+            url=TARGET_URL,
+            status_code=200,
+            headers={
+                "Location": UPLOAD_RESOURCE_URI,
+                "Upload-Complete": "?1",
+                "Upload-Offset": "11",
+            },
+        )
+
+        with RufhClient() as client:
+            client.create_upload(
+                TARGET_URL,
+                b"hello world",
+                complete=True,
+                want_digest=True,
+            )
+
+        request = httpx_mock.get_requests()[0]
+        assert "content-digest" in {k.lower() for k in request.headers}
+        assert "sha-256" in request.headers["content-digest"].lower()
+
+    def test_want_digest_list_algorithms(self, httpx_mock: HTTPXMock):
+        """When want_digest is a list, those algorithms are used."""
+        httpx_mock.add_response(
+            method="POST",
+            url=TARGET_URL,
+            status_code=200,
+            headers={
+                "Location": UPLOAD_RESOURCE_URI,
+                "Upload-Complete": "?1",
+                "Upload-Offset": "11",
+            },
+        )
+
+        with RufhClient() as client:
+            client.create_upload(
+                TARGET_URL,
+                b"hello world",
+                complete=True,
+                want_digest=["sha-256", "sha-512"],
+            )
+
+        request = httpx_mock.get_requests()[0]
+        cd = request.headers["content-digest"].lower()
+        assert "sha-256" in cd
+        assert "sha-512" in cd
+
+    def test_want_digest_requests_repr_digest_on_complete(self, httpx_mock: HTTPXMock):
+        """When want_digest is set with complete=True, Want-Repr-Digest is sent."""
+        httpx_mock.add_response(
+            method="POST",
+            url=TARGET_URL,
+            status_code=200,
+            headers={
+                "Location": UPLOAD_RESOURCE_URI,
+                "Upload-Complete": "?1",
+                "Upload-Offset": "11",
+            },
+        )
+
+        with RufhClient() as client:
+            client.create_upload(
+                TARGET_URL,
+                b"hello world",
+                complete=True,
+                want_digest=True,
+            )
+
+        request = httpx_mock.get_requests()[0]
+        assert "want-repr-digest" in {k.lower() for k in request.headers}
+        assert "sha-256" in request.headers["want-repr-digest"].lower()
+
+    def test_want_digest_not_sent_for_incomplete(self, httpx_mock: HTTPXMock):
+        """When want_digest is set but complete=False, Want-Repr-Digest is not sent."""
+        httpx_mock.add_response(
+            method="POST",
+            url=TARGET_URL,
+            status_code=201,
+            headers={
+                "Location": UPLOAD_RESOURCE_URI,
+                "Upload-Complete": "?0",
+                "Upload-Offset": "11",
+            },
+        )
+
+        with RufhClient() as client:
+            client.create_upload(
+                TARGET_URL,
+                b"hello world",
+                complete=False,
+                want_digest=True,
+            )
+
+        request = httpx_mock.get_requests()[0]
+        assert "want-repr-digest" not in {k.lower() for k in request.headers}
+
+    def test_explicit_content_digest_header(self, httpx_mock: HTTPXMock):
+        """Explicit content_digest parameter takes precedence."""
+        httpx_mock.add_response(
+            method="POST",
+            url=TARGET_URL,
+            status_code=200,
+            headers={
+                "Location": UPLOAD_RESOURCE_URI,
+                "Upload-Complete": "?1",
+                "Upload-Offset": "11",
+            },
+        )
+
+        from pyrufh.headers import compute_digest
+
+        explicit_digest = {"sha-512": compute_digest("sha-512", b"hello world")}
+
+        with RufhClient() as client:
+            client.create_upload(
+                TARGET_URL,
+                b"hello world",
+                complete=True,
+                content_digest=explicit_digest,
+            )
+
+        request = httpx_mock.get_requests()[0]
+        assert "sha-512" in request.headers["content-digest"].lower()
+
+
+class TestDigestAppend:
+    def test_append_want_digest(self, httpx_mock: HTTPXMock):
+        """append() supports want_digest for automatic Content-Digest."""
+        httpx_mock.add_response(
+            method="PATCH",
+            url=UPLOAD_RESOURCE_URI,
+            status_code=204,
+            headers={
+                "Upload-Complete": "?0",
+                "Upload-Offset": "100",
+            },
+        )
+
+        with RufhClient() as client:
+            from pyrufh import UploadResource
+
+            resource = UploadResource(uri=UPLOAD_RESOURCE_URI, offset=50)
+            client.append(
+                resource,
+                b"x" * 50,
+                complete=False,
+                want_digest=True,
+            )
+
+        request = httpx_mock.get_requests()[0]
+        assert "content-digest" in {k.lower() for k in request.headers}
+
+
+class TestDigestUpload:
+    def test_upload_with_want_digest(self, httpx_mock: HTTPXMock):
+        """upload() supports want_digest for automatic Content-Digest."""
+        httpx_mock.add_response(
+            method="POST",
+            url=TARGET_URL,
+            status_code=200,
+            headers={
+                "Location": UPLOAD_RESOURCE_URI,
+                "Upload-Complete": "?1",
+                "Upload-Offset": "100",
+            },
+        )
+
+        with RufhClient() as client:
+            client.upload(
+                TARGET_URL,
+                b"x" * 100,
+                want_digest=True,
+            )
+
+        request = httpx_mock.get_requests()[0]
+        assert "content-digest" in {k.lower() for k in request.headers}
+        assert "want-repr-digest" in {k.lower() for k in request.headers}

@@ -1,16 +1,28 @@
 """Tests for header parsing utilities."""
 
+import base64
+
 import httpx
+import pytest
 
 from pyrufh.headers import (
     UploadLimits,
+    build_content_digest_header,
+    build_repr_digest_header,
     build_upload_complete_header,
     build_upload_length_header,
     build_upload_offset_header,
+    build_want_content_digest_header,
+    build_want_repr_digest_header,
+    compute_digest,
+    parse_content_digest,
+    parse_repr_digest,
     parse_upload_complete,
     parse_upload_length,
     parse_upload_limits,
     parse_upload_offset,
+    parse_want_content_digest,
+    parse_want_repr_digest,
 )
 
 
@@ -122,3 +134,107 @@ class TestBuildHeaders:
 
     def test_build_upload_length(self):
         assert build_upload_length_header(999) == "999"
+
+
+class TestDigestParsing:
+    def test_parse_content_digest_single(self):
+        h = make_headers(
+            **{"content-digest": "sha-256=:LPs0XyGAP1tZxqQ3jJ7vAWj1gEqZef3J7rXhZ3Yv8qk=:"}
+        )
+        digests = parse_content_digest(h)
+        assert digests is not None
+        assert "sha-256" in digests
+
+    def test_parse_content_digest_multiple(self):
+        h = make_headers(**{"content-digest": "sha-256=:abc=:, sha-512=:xyz=:"})
+        digests = parse_content_digest(h)
+        assert digests is not None
+        assert "sha-256" in digests
+        assert "sha-512" in digests
+
+    def test_parse_content_digest_missing(self):
+        h = make_headers()
+        assert parse_content_digest(h) is None
+
+    def test_parse_repr_digest(self):
+        h = make_headers(
+            **{"repr-digest": "sha-256=:LPs0XyGAP1tZxqQ3jJ7vAWj1gEqZef3J7rXhZ3Yv8qk=:"}
+        )
+        digests = parse_repr_digest(h)
+        assert digests is not None
+        assert "sha-256" in digests
+
+    def test_parse_want_content_digest(self):
+        h = make_headers(**{"want-content-digest": "sha-256=1, sha-512=0"})
+        prefs = parse_want_content_digest(h)
+        assert prefs is not None
+        assert prefs.get("sha-256") == 1
+        assert prefs.get("sha-512") == 0
+
+    def test_parse_want_repr_digest(self):
+        h = make_headers(**{"want-repr-digest": "sha-256=10"})
+        prefs = parse_want_repr_digest(h)
+        assert prefs is not None
+        assert prefs.get("sha-256") == 10
+
+
+class TestDigestBuilding:
+    def test_build_content_digest_header(self):
+        data = b"hello world"
+        sha256 = compute_digest("sha-256", data)
+        header = build_content_digest_header({"sha-256": sha256})
+        assert header.startswith("sha-256=:")
+        assert header.endswith(":")
+        parsed = parse_content_digest(make_headers(**{"content-digest": header}))
+        assert parsed is not None
+        assert parsed["sha-256"] == sha256
+
+    def test_build_repr_digest_header(self):
+        data = b"hello world"
+        sha256 = compute_digest("sha-256", data)
+        header = build_repr_digest_header({"sha-256": sha256})
+        assert header.startswith("sha-256=:")
+        parsed = parse_repr_digest(make_headers(**{"repr-digest": header}))
+        assert parsed is not None
+        assert parsed["sha-256"] == sha256
+
+    def test_build_want_digest_header(self):
+        header = build_want_content_digest_header({"sha-256": 10, "sha-512": 5})
+        assert "sha-256=10" in header
+        assert "sha-512=5" in header
+
+
+class TestComputeDigest:
+    def test_sha256(self):
+        data = b"hello world"
+        digest = compute_digest("sha-256", data)
+        assert len(digest) == 32
+        expected = base64.b64decode("uU0nuZNNPgilLlLX2n2r+sSE7+N6U4DukIj3rOLvzek=")
+        assert digest == expected
+
+    def test_sha512(self):
+        data = b"hello world"
+        digest = compute_digest("sha-512", data)
+        assert len(digest) == 64
+
+    def test_sha256_from_file_object(self):
+        import io
+
+        data = b"hello world"
+        file_obj = io.BytesIO(data)
+        digest = compute_digest("sha-256", file_obj)
+        expected = compute_digest("sha-256", data)
+        assert digest == expected
+
+    def test_sha256_from_file_object_chunked(self):
+        import io
+
+        data = b"hello world" * 1000
+        file_obj = io.BytesIO(data)
+        digest = compute_digest("sha-256", file_obj)
+        expected = compute_digest("sha-256", data)
+        assert digest == expected
+
+    def test_unsupported_algorithm(self):
+        with pytest.raises(ValueError, match="Unsupported"):
+            compute_digest("unknown-algo", b"data")
