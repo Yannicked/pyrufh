@@ -8,6 +8,7 @@ Implements draft-ietf-httpbis-resumable-upload-11 client behaviour:
   - Optimistic upload  (§12.1) with transparent resumption on interruption
   - Careful upload     (§12.2)
   - 104 Upload Resumption Supported interim response handling (§5)
+  - Integrity Digests (§10) via RFC 9530 Digest Fields
 """
 
 from __future__ import annotations
@@ -32,9 +33,13 @@ from .exceptions import (
 from .headers import (
     CONTENT_TYPE_PARTIAL_UPLOAD,
     UploadLimits,
+    build_content_digest_header,
+    build_repr_digest_header,
     build_upload_complete_header,
     build_upload_length_header,
     build_upload_offset_header,
+    build_want_content_digest_header,
+    build_want_repr_digest_header,
     draft_interop_headers,
     parse_location,
     parse_upload_complete,
@@ -163,6 +168,11 @@ class RufhClient:
         length: int | None = None,
         content_type: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        content_digest: dict[str, bytes] | None = None,
+        repr_digest: dict[str, bytes] | None = None,
+        want_repr_digest: dict[str, int] | None = None,
+        want_content_digest: dict[str, int] | None = None,
+        want_digest: bool | list[str] | tuple[str, ...] | dict[str, int] | None = None,
     ) -> UploadCreationResult:
         """Create a new upload resource (§4.2).
 
@@ -189,6 +199,25 @@ class RufhClient:
             upload type; that is only used for PATCH appends).
         extra_headers:
             Additional HTTP headers to include in the request.
+        content_digest:
+            Content-Digest header value (RFC 9530 §2) for content integrity.
+        repr_digest:
+            Repr-Digest header value (RFC 9530 §3) for representation integrity.
+        want_repr_digest:
+            Want-Repr-Digest header value (RFC 9530 §4) specifying preferred
+            algorithms for server to use when returning Repr-Digest.
+        want_content_digest:
+            Want-Content-Digest header value (RFC 9530 §4) specifying preferred
+            algorithms for server to use when returning Content-Digest.
+        want_digest:
+            Shorthand to enable automatic Content-Digest computation.
+            Can be:
+              - ``True`` - enable with sha-256
+              - ``["sha-256", "sha-512"]`` - enable with specific algorithms
+              - ``{"sha-256": 10}`` - RFC 9530 format with preference weights
+            When enabled, the client computes Content-Digest for the request
+            body. When ``complete=True``, also requests Repr-Digest from the
+            server via Want-Repr-Digest.
 
         Returns
         -------
@@ -201,6 +230,8 @@ class RufhClient:
         UploadCreationError
             If the server responds with a 4xx (non-retryable) error.
         """
+        from .headers import compute_digest
+
         if isinstance(data, (bytes, bytearray)):
             body = bytes(data)
             content_length = len(body)
@@ -208,18 +239,39 @@ class RufhClient:
             body = data.read()
             content_length = len(body)
 
+        if want_digest:
+            if want_digest is True:
+                want_digest = {"sha-256": 10}
+            elif isinstance(want_digest, (list, tuple)):
+                want_digest = {alg: 10 for alg in want_digest}
+            content_digest = {}
+            for alg in sorted(want_digest.keys()):
+                if want_digest[alg] > 0:
+                    content_digest[alg] = compute_digest(alg, body)
+            if complete:
+                want_repr_digest = want_digest
+
         headers: dict[str, str] = {
             **draft_interop_headers(),
             "Upload-Complete": build_upload_complete_header(complete),
             "Content-Length": str(content_length),
         }
 
-        # Indicate length via Upload-Length if provided, or infer from
-        # Content-Length + Upload-Complete: ?1 (§4.1.3).
+        if content_digest:
+            headers["Content-Digest"] = build_content_digest_header(content_digest)
+
+        if repr_digest:
+            headers["Repr-Digest"] = build_repr_digest_header(repr_digest)
+
+        if want_repr_digest:
+            headers["Want-Repr-Digest"] = build_want_repr_digest_header(want_repr_digest)
+
+        if want_content_digest:
+            headers["Want-Content-Digest"] = build_want_content_digest_header(want_content_digest)
+
         if length is not None:
             headers["Upload-Length"] = build_upload_length_header(length)
         elif complete and content_length > 0:
-            # Length can be inferred: total = offset(0) + Content-Length.
             headers["Upload-Length"] = build_upload_length_header(content_length)
 
         if content_type is not None:
@@ -230,7 +282,6 @@ class RufhClient:
 
         logger.debug("Creating upload: %s %s (complete=%s)", method, url, complete)
 
-        # Clear any previously captured interim responses before this request.
         self._interim_responses.clear()
 
         try:
@@ -238,18 +289,12 @@ class RufhClient:
         except httpx.RequestError as exc:
             raise UploadCreationError(f"Network error during upload creation: {exc}") from exc
 
-        # Snapshot the interim responses received during this specific request.
         captured_interim = list(self._interim_responses)
 
-        # ---- Interpret the final response (§4.2.1) -------------------------
-
         if response.status_code == 104:
-            # This should not normally be returned as a final response by httpx,
-            # but handle defensively.
             raise UploadCreationError("Received unexpected 104 as final response", status_code=104)
 
         if 400 <= response.status_code < 500:
-            # 4xx - do not retry (§4.2.1).
             self._raise_for_problem(response, UploadCreationError)
             raise UploadCreationError(
                 f"Upload creation rejected: {response.status_code}",
@@ -257,25 +302,17 @@ class RufhClient:
             )
 
         if response.status_code >= 500:
-            # Per §4.2.1, the client MAY resume if it received a 104 with the
-            # upload resource URI.  We store the 5xx response for the caller;
-            # they can inspect captured_interim for a Location header.
             raise UploadCreationError(
                 f"Server error during upload creation: {response.status_code}",
                 status_code=response.status_code,
             )
 
-        # 2xx success path.
         location = parse_location(response.headers)
         upload_complete_header = parse_upload_complete(response.headers)
         upload_offset = parse_upload_offset(response.headers)
         upload_length = parse_upload_length(response.headers)
         limits = parse_upload_limits(response.headers)
 
-        # ---- Merge information from 104 interim responses (§5) ---------------
-        # Per §4.2.2, the first 104 MUST include the Location header.
-        # Final responses with Upload-Complete: ?1 are exempt from Location.
-        # We use the 104 Location as a fallback when the final response omits it.
         interim_location = self._first_interim_location(captured_interim)
         interim_limits: UploadLimits | None = self._latest_interim_limits(captured_interim)
 
@@ -286,13 +323,9 @@ class RufhClient:
         if limits is None and interim_limits is not None:
             limits = interim_limits
 
-        # When Upload-Complete: ?1 is in the final response, the upload is done
-        # and the response is from the targeted resource (§4.2.1, §4.4.1).
         is_complete = upload_complete_header is True
 
         if is_complete:
-            # Upload completed in this single request - location may or may not
-            # be present (exempt from Location requirement per §4.2.2).
             upload_uri = location or url
             resource = UploadResource(
                 uri=upload_uri,
@@ -308,7 +341,6 @@ class RufhClient:
                 interim_responses=captured_interim,
             )
 
-        # Not complete yet - Location MUST be present (from final or 104 response).
         if location is None:
             raise UploadCreationError(
                 "Server did not return a Location header for the upload resource"
@@ -408,6 +440,9 @@ class RufhClient:
         *,
         complete: bool,
         extra_headers: dict[str, str] | None = None,
+        content_digest: dict[str, bytes] | None = None,
+        want_repr_digest: dict[str, int] | None = None,
+        want_digest: bool | list[str] | tuple[str, ...] | dict[str, int] | None = None,
     ) -> httpx.Response:
         """Append representation data to an upload resource (§4.4).
 
@@ -425,6 +460,11 @@ class RufhClient:
             Whether this is the final chunk (``Upload-Complete: ?1``).
         extra_headers:
             Additional HTTP headers to include in the request.
+        content_digest:
+            Content-Digest header value (RFC 9530 §2) for content integrity.
+        want_repr_digest:
+            Want-Repr-Digest header value (RFC 9530 §4) specifying preferred
+            algorithms for server to use when returning Repr-Digest.
 
         Returns
         -------
@@ -443,8 +483,22 @@ class RufhClient:
         UploadAppendError
             On other 4xx or server errors.
         """
+        from .headers import compute_digest
+
         body = bytes(data) if isinstance(data, (bytes, bytearray)) else data.read()
         content_length = len(body)
+
+        if want_digest:
+            if want_digest is True:
+                want_digest = {"sha-256": 10}
+            elif isinstance(want_digest, (list, tuple)):
+                want_digest = {alg: 10 for alg in want_digest}
+            content_digest = {}
+            for alg in sorted(want_digest.keys()):
+                if want_digest[alg] > 0:
+                    content_digest[alg] = compute_digest(alg, body)
+            if complete:
+                want_repr_digest = want_digest
 
         headers: dict[str, str] = {
             **draft_interop_headers(),
@@ -454,7 +508,12 @@ class RufhClient:
             "Content-Length": str(content_length),
         }
 
-        # Communicate the total length when it becomes known with the final chunk.
+        if content_digest:
+            headers["Content-Digest"] = build_content_digest_header(content_digest)
+
+        if want_repr_digest:
+            headers["Want-Repr-Digest"] = build_want_repr_digest_header(want_repr_digest)
+
         if complete and upload_resource.length is not None:
             headers["Upload-Length"] = build_upload_length_header(upload_resource.length)
 
@@ -469,7 +528,6 @@ class RufhClient:
             complete,
         )
 
-        # Clear any previously captured interim responses before this request.
         self._interim_responses.clear()
 
         try:
@@ -477,13 +535,9 @@ class RufhClient:
         except httpx.RequestError as exc:
             raise UploadAppendError(f"Network error during upload append: {exc}") from exc
 
-        # Snapshot the interim responses received during this specific request.
         captured_interim = list(self._interim_responses)
 
-        # ---- Handle error responses (§4.4.1) --------------------------------
-
         if response.status_code == 409:
-            # Mismatching offset.
             expected = parse_upload_offset(response.headers)
             raise MismatchingOffsetError(
                 expected_offset=expected if expected is not None else -1,
@@ -590,6 +644,11 @@ class RufhClient:
         content_type: str | None = None,
         extra_headers: dict[str, str] | None = None,
         chunk_size: int | None = None,
+        content_digest: dict[str, bytes] | None = None,
+        repr_digest: dict[str, bytes] | None = None,
+        want_repr_digest: dict[str, int] | None = None,
+        want_content_digest: dict[str, int] | None = None,
+        want_digest: bool | list[str] | tuple[str, ...] | dict[str, int] | None = None,
     ) -> httpx.Response:
         """Upload representation data using the optimistic strategy (§12.1).
 
@@ -619,6 +678,21 @@ class RufhClient:
             Additional headers to pass to the creation request.
         chunk_size:
             Override the instance-level ``chunk_size``.
+        content_digest:
+            Content-Digest header value (RFC 9530 §2) for content integrity.
+        repr_digest:
+            Repr-Digest header value (RFC 9530 §3) for representation integrity.
+        want_repr_digest:
+            Want-Repr-Digest header value (RFC 9530 §4) specifying preferred
+            algorithms for server to use when returning Repr-Digest.
+        want_content_digest:
+            Want-Content-Digest header value (RFC 9530 §4) specifying preferred
+            algorithms for server to use when returning Content-Digest.
+        want_digest:
+            Shorthand to enable automatic Content-Digest computation. When set
+            (e.g., ``{"sha-256": 10}``), the client computes Content-Digest
+            for the request body and includes it. When completing an upload,
+            also requests Repr-Digest from the server.
 
         Returns
         -------
@@ -635,11 +709,9 @@ class RufhClient:
         """
         _chunk_size = chunk_size or self.chunk_size
 
-        # Normalise input to bytes for simplicity.
         raw = bytes(data) if isinstance(data, (bytes, bytearray)) else data.read()
         total_length = length if length is not None else len(raw)
 
-        # Attempt to send everything in one shot.
         result = self.create_upload(
             url,
             raw,
@@ -648,13 +720,16 @@ class RufhClient:
             length=total_length,
             content_type=content_type,
             extra_headers=extra_headers,
+            content_digest=content_digest,
+            repr_digest=repr_digest,
+            want_repr_digest=want_repr_digest,
+            want_content_digest=want_content_digest,
+            want_digest=want_digest,
         )
 
         if result.complete and result.final_response is not None:
             return result.final_response
 
-        # The upload resource was created but not completed (e.g. the server
-        # returned 201 with Upload-Complete: ?0).  Continue with appends.
         return self._stream_append(result.upload_resource, raw, _chunk_size)
 
     # ------------------------------------------------------------------
@@ -671,6 +746,11 @@ class RufhClient:
         content_type: str | None = None,
         extra_headers: dict[str, str] | None = None,
         chunk_size: int | None = None,
+        content_digest: dict[str, bytes] | None = None,
+        repr_digest: dict[str, bytes] | None = None,
+        want_repr_digest: dict[str, int] | None = None,
+        want_content_digest: dict[str, int] | None = None,
+        want_digest: bool | list[str] | tuple[str, ...] | dict[str, int] | None = None,
     ) -> httpx.Response:
         """Upload representation data using the careful strategy (§12.2).
 
@@ -694,6 +774,21 @@ class RufhClient:
             Additional headers to pass to the creation request.
         chunk_size:
             Override the instance-level ``chunk_size``.
+        content_digest:
+            Content-Digest header value (RFC 9530 §2) for content integrity.
+        repr_digest:
+            Repr-Digest header value (RFC 9530 §3) for representation integrity.
+        want_repr_digest:
+            Want-Repr-Digest header value (RFC 9530 §4) specifying preferred
+            algorithms for server to use when returning Repr-Digest.
+        want_content_digest:
+            Want-Content-Digest header value (RFC 9530 §4) specifying preferred
+            algorithms for server to use when returning Content-Digest.
+        want_digest:
+            Shorthand to enable automatic Content-Digest computation. When set
+            (e.g., ``{"sha-256": 10}``), the client computes Content-Digest
+            for each chunk and includes it. When completing an upload, also
+            requests Repr-Digest from the server.
 
         Returns
         -------
@@ -705,7 +800,6 @@ class RufhClient:
         raw = bytes(data) if isinstance(data, (bytes, bytearray)) else data.read()
         total_length = length if length is not None else len(raw)
 
-        # Step 1: empty upload creation (Upload-Complete: ?0, no body).
         result = self.create_upload(
             url,
             b"",
@@ -714,9 +808,10 @@ class RufhClient:
             length=total_length,
             content_type=content_type,
             extra_headers=extra_headers,
+            want_repr_digest=want_repr_digest,
+            want_content_digest=want_content_digest,
         )
 
-        # Step 2: Stream the data via append.
         return self._stream_append(result.upload_resource, raw, _chunk_size)
 
     # ------------------------------------------------------------------
