@@ -84,3 +84,53 @@ class UploadInterruptedError(RufhError):
 
 class UploadNotResumableError(RufhError):
     """Raised when an interrupted upload cannot be resumed (no upload resource URI available)."""
+
+
+class ContentDigestMismatchError(UploadError):
+    """Raised when the Content-Digest header does not match the received content.
+
+    Corresponds to RFC 9530 integrity verification for individual requests.
+    """
+
+    def __init__(
+        self,
+        expected_algorithm: str,
+        expected_digest: bytes,
+        provided_digest: bytes,
+    ) -> None:
+        import base64
+
+        super().__init__(
+            f"Content-Digest mismatch for algorithm {expected_algorithm}: "
+            f"expected {base64.b64encode(expected_digest).decode()}, "
+            f"got {base64.b64encode(provided_digest).decode()}",
+            status_code=400,
+        )
+        self.expected_algorithm = expected_algorithm
+        self.expected_digest = expected_digest
+        self.provided_digest = provided_digest
+
+
+class RepresentationDigestMismatchError(UploadError):
+    """Raised when the Repr-Digest header does not match the representation.
+
+    Corresponds to RFC 9530 integrity verification for entire representations.
+    """
+
+    def __init__(
+        self,
+        expected_algorithm: str,
+        expected_digest: bytes,
+        provided_digest: bytes,
+    ) -> None:
+        import base64
+
+        super().__init__(
+            f"Repr-Digest mismatch for algorithm {expected_algorithm}: "
+            f"expected {base64.b64encode(expected_digest).decode()}, "
+            f"got {base64.b64encode(provided_digest).decode()}",
+            status_code=400,
+        )
+        self.expected_algorithm = expected_algorithm
+        self.expected_digest = expected_digest
+        self.provided_digest = provided_digest
