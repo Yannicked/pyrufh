@@ -14,7 +14,7 @@ class TestFastAPIIntegration:
     def app(self):
         """Create a FastAPI test app."""
         try:
-            from fastapi import FastAPI
+            from fastapi import FastAPI  # ty: ignore
 
             from pyrufh.server.fastapi import setup_fastapi_routes
         except ImportError:

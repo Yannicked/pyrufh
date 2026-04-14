@@ -17,7 +17,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 try:
-    import flask
+    import flask  # ty: ignore
 except ImportError as exc:
     raise ImportError(
         "Flask is required for Flask integration. Install with: pip install pyrufh[flask]"
