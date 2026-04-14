@@ -17,13 +17,14 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 try:
-    import flask  # ty:ignore[unresolved-import]
+    import flask  # ty: ignore
 except ImportError as exc:
     raise ImportError(
         "Flask is required for Flask integration. Install with: pip install pyrufh[flask]"
     ) from exc
 
 from ..core import (
+    DigestMismatchError,
     InMemoryRufhServer,
     RufhServer,
     UploadAlreadyCompleteError,
@@ -34,13 +35,18 @@ from ..core import (
 from ..headers import (
     CONTENT_TYPE_PARTIAL_UPLOAD,
     UploadLimits,
+    build_repr_digest_header,
     build_upload_complete_header,
     build_upload_length_header,
     build_upload_offset_header,
     draft_interop_headers,
+    parse_content_digest,
+    parse_repr_digest,
     parse_upload_complete,
     parse_upload_length,
     parse_upload_offset,
+    parse_want_content_digest,
+    parse_want_repr_digest,
 )
 
 if TYPE_CHECKING:
@@ -72,20 +78,39 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
         headers = cast("Mapping[str, str]", flask.request.headers)
         complete_header = parse_upload_complete(headers)
         length_header = parse_upload_length(headers)
+        content_digest = parse_content_digest(headers)
+        repr_digest = parse_repr_digest(headers)
+        want_repr_digest = parse_want_repr_digest(headers)
+        want_content_digest = parse_want_content_digest(headers)
 
         complete = complete_header if complete_header is not None else False
 
         uri = f"{server._base_url}/uploads/{upload_uri}"
-        upload, status = server.create_upload(
-            data,
-            method=flask.request.method,
-            complete=complete,
-            length=length_header,
-            content_type=flask.request.content_type,
-            uri=uri,
-        )
+        try:
+            upload, status = server.create_upload(
+                data,
+                method=flask.request.method,
+                complete=complete,
+                length=length_header,
+                content_type=flask.request.content_type,
+                uri=uri,
+                content_digest=content_digest,
+                repr_digest=repr_digest,
+                want_repr_digest=want_repr_digest,
+                want_content_digest=want_content_digest,
+            )
+        except DigestMismatchError as e:
+            import base64
 
-        headers = {
+            return flask.make_response(
+                (
+                    f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch","title":"Digest mismatch","algorithm":"{e.algorithm}","expected":"{base64.b64encode(e.expected).decode()}","actual":"{base64.b64encode(e.actual).decode()}"}}',
+                    400,
+                    {"Content-Type": "application/problem+json"},
+                )
+            )
+
+        response_headers = {
             **draft_interop_headers(),
             "Upload-Complete": build_upload_complete_header(upload.complete),
             "Upload-Offset": build_upload_offset_header(upload.offset),
@@ -93,7 +118,10 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
         }
 
         if upload.length is not None:
-            headers["Upload-Length"] = build_upload_length_header(upload.length)
+            response_headers["Upload-Length"] = build_upload_length_header(upload.length)
+
+        if upload.repr_digest is not None:
+            response_headers["Repr-Digest"] = build_repr_digest_header(upload.repr_digest)
 
         if upload.limits is not None:
             limit_parts = []
@@ -108,9 +136,9 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
             if upload.limits.max_age is not None:
                 limit_parts.append(f"max-age={upload.limits.max_age}")
             if limit_parts:
-                headers["Upload-Limit"] = ", ".join(limit_parts)
+                response_headers["Upload-Limit"] = ", ".join(limit_parts)
 
-        return flask.make_response(("", status, headers))
+        return flask.make_response(("", status, response_headers))
 
     @app.route("/uploads/<path:upload_uri>", methods=["HEAD"])
     def get_offset(upload_uri: str):
@@ -168,6 +196,8 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
         offset_header = parse_upload_offset(headers)
         complete_header = parse_upload_complete(headers)
         length_header = parse_upload_length(headers)
+        content_digest = parse_content_digest(headers)
+        want_repr_digest = parse_want_repr_digest(headers)
 
         if offset_header is None:
             return flask.make_response(
@@ -186,6 +216,8 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
                 upload_offset=offset_header,
                 complete=complete,
                 upload_length=length_header,
+                content_digest=content_digest,
+                want_repr_digest=want_repr_digest,
             )
         except UploadNotFoundError:
             return flask.make_response(
@@ -219,17 +251,30 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
                     {"Content-Type": "application/problem+json"},
                 )
             )
+        except DigestMismatchError as e:
+            import base64
 
-        headers = {
+            return flask.make_response(
+                (
+                    f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch","title":"Digest mismatch","algorithm":"{e.algorithm}","expected":"{base64.b64encode(e.expected).decode()}","actual":"{base64.b64encode(e.actual).decode()}"}}',
+                    400,
+                    {"Content-Type": "application/problem+json"},
+                )
+            )
+
+        response_headers = {
             **draft_interop_headers(),
             "Upload-Complete": build_upload_complete_header(upload.complete),
             "Upload-Offset": build_upload_offset_header(upload.offset),
         }
 
         if upload.length is not None:
-            headers["Upload-Length"] = build_upload_length_header(upload.length)
+            response_headers["Upload-Length"] = build_upload_length_header(upload.length)
 
-        return flask.make_response(("", 200, headers))
+        if upload.repr_digest is not None:
+            response_headers["Repr-Digest"] = build_repr_digest_header(upload.repr_digest)
+
+        return flask.make_response(("", 200, response_headers))
 
     @app.route("/uploads/<path:upload_uri>", methods=["DELETE"])
     def cancel_upload(upload_uri: str):

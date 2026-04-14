@@ -14,7 +14,7 @@ class TestFlaskIntegration:
     def app(self):
         """Create a Flask test app."""
         try:
-            from flask import Flask
+            from flask import Flask  # ty: ignore
 
             from pyrufh.server.flask import setup_flask_routes
         except ImportError:

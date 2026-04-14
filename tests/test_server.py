@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from pyrufh.core import DigestMismatchError
+from pyrufh.headers import compute_digest
 from pyrufh.server import (
     InMemoryRufhServer,
     UploadAlreadyCompleteError,
@@ -187,3 +189,123 @@ class TestInMemoryRufhServer:
         info = server.get_upload_info("http://example.com/uploads/nonexistent")
 
         assert info is None
+
+
+class TestDigestServer:
+    """Tests for RFC 9530 Digest integration on the server side."""
+
+    def test_create_upload_verifies_content_digest(self):
+        """Server verifies Content-Digest when provided."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        wrong_sha256 = compute_digest("sha-256", b"wrong data")
+
+        with pytest.raises(DigestMismatchError):
+            server.create_upload(
+                b"hello world",
+                complete=True,
+                content_digest={"sha-256": wrong_sha256},
+            )
+
+    def test_create_upload_accepts_correct_content_digest(self):
+        """Server accepts correct Content-Digest."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        sha256 = compute_digest("sha-256", b"hello world")
+
+        upload, _status = server.create_upload(
+            b"hello world",
+            complete=True,
+            content_digest={"sha-256": sha256},
+        )
+
+        assert upload.complete is True
+
+    def test_create_upload_computes_repr_digest_when_wanted(self):
+        """Server computes Repr-Digest when Want-Repr-Digest is provided and complete."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        upload, _status = server.create_upload(
+            b"hello world",
+            complete=True,
+            want_repr_digest={"sha-256": 10},
+        )
+
+        assert upload.complete is True
+        assert upload.repr_digest is not None
+        assert "sha-256" in upload.repr_digest
+
+    def test_create_upload_no_repr_digest_if_incomplete(self):
+        """Server does not compute Repr-Digest when upload is not complete."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        upload, _status = server.create_upload(
+            b"hello world",
+            complete=False,
+            want_repr_digest={"sha-256": 10},
+        )
+
+        assert upload.complete is False
+        assert upload.repr_digest is None
+
+    def test_append_verifies_content_digest(self):
+        """Server verifies Content-Digest on append."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        upload, _ = server.create_upload(b"hello", complete=False)
+
+        wrong_sha256 = compute_digest("sha-256", b"wrong")
+
+        with pytest.raises(DigestMismatchError):
+            server.append(
+                upload.uri,
+                b" world",
+                upload_offset=5,
+                content_digest={"sha-256": wrong_sha256},
+            )
+
+    def test_append_computes_repr_digest_on_complete(self):
+        """Server computes Repr-Digest on append when complete and wanted."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        upload, _ = server.create_upload(b"hello ", complete=False)
+
+        updated = server.append(
+            upload.uri,
+            b"world",
+            upload_offset=6,
+            complete=True,
+            upload_length=11,
+            want_repr_digest={"sha-256": 10},
+        )
+
+        assert updated.complete is True
+        assert updated.repr_digest is not None
+        assert "sha-256" in updated.repr_digest
+
+    def test_repr_digest_verification(self):
+        """Server verifies Repr-Digest when provided."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        wrong_sha256 = compute_digest("sha-256", b"wrong data")
+
+        with pytest.raises(DigestMismatchError):
+            server.create_upload(
+                b"hello world",
+                complete=True,
+                repr_digest={"sha-256": wrong_sha256},
+            )
+
+    def test_repr_digest_accepted_when_correct(self):
+        """Server accepts correct Repr-Digest."""
+        server = InMemoryRufhServer(base_url="http://example.com")
+
+        sha256 = compute_digest("sha-256", b"hello world")
+
+        upload, _status = server.create_upload(
+            b"hello world",
+            complete=True,
+            repr_digest={"sha-256": sha256},
+        )
+
+        assert upload.complete is True

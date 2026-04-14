@@ -6,6 +6,7 @@ Implements draft-ietf-httpbis-resumable-upload-11 server behaviour:
   - Upload append    (§4.4)
   - Upload cancellation (§4.5)
   - 104 Upload Resumption Supported interim response handling (§5)
+  - Integrity Digests (§10) via RFC 9530 Digest Fields
 """
 
 from __future__ import annotations
@@ -48,6 +49,29 @@ class UploadLengthMismatchError(Exception):
     """Raised when the Upload-Length doesn't match the provided data."""
 
 
+class DigestMismatchError(Exception):
+    """Raised when a digest header doesn't match the computed digest."""
+
+    def __init__(
+        self,
+        header_name: str,
+        algorithm: str,
+        expected: bytes,
+        actual: bytes,
+    ) -> None:
+        import base64
+
+        super().__init__(
+            f"{header_name} mismatch for {algorithm}: "
+            f"expected {base64.b64encode(expected).decode()}, "
+            f"got {base64.b64encode(actual).decode()}"
+        )
+        self.header_name = header_name
+        self.algorithm = algorithm
+        self.expected = expected
+        self.actual = actual
+
+
 @dataclass
 class Upload:
     """Represents a server-side upload resource."""
@@ -60,6 +84,8 @@ class Upload:
     length: int | None = None
     limits: UploadLimits | None = None
     max_age: int | None = None
+    content_digest: dict[str, bytes] | None = None
+    repr_digest: dict[str, bytes] | None = None
 
     def append(self, chunk: bytes, expected_offset: int) -> None:
         if self.complete:
@@ -129,6 +155,10 @@ class RufhServer(ABC):
         length: int | None = None,
         content_type: str | None = None,
         uri: str | None = None,
+        content_digest: dict[str, bytes] | None = None,
+        repr_digest: dict[str, bytes] | None = None,
+        want_repr_digest: dict[str, int] | None = None,
+        want_content_digest: dict[str, int] | None = None,
     ) -> tuple[Upload, int]:
         """Create a new upload resource (§4.2).
 
@@ -138,16 +168,37 @@ class RufhServer(ABC):
             Optional URI for the upload. If not provided, one is auto-generated.
             When provided, it is used as both the upload ID (last path segment)
             and the full URI.
+        content_digest:
+            Content-Digest header value (RFC 9530 §2) for verifying request content.
+        repr_digest:
+            Repr-Digest header value (RFC 9530 §3) for verifying full representation.
+        want_repr_digest:
+            Want-Repr-Digest header value (RFC 9530 §4) specifying preferred algorithms.
+        want_content_digest:
+            Want-Content-Digest header value (RFC 9530 §4) specifying preferred algorithms.
 
         Returns
         -------
         tuple[Upload, int]
             The created Upload and the response status code.
         """
+        from .headers import compute_digest
+
         if isinstance(data, (bytes, bytearray)):
             body = bytes(data)
         else:
             body = data.read() if hasattr(data, "read") else data
+
+        if content_digest:
+            for alg, expected in content_digest.items():
+                computed = compute_digest(alg, body)
+                if computed != expected:
+                    raise DigestMismatchError(
+                        header_name="Content-Digest",
+                        algorithm=alg,
+                        expected=expected,
+                        actual=computed,
+                    )
 
         content_length = len(body)
         inferred_length = length
@@ -161,6 +212,13 @@ class RufhServer(ABC):
             upload_id = self._generate_upload_id()
             uri = self._build_uri(upload_id)
 
+        computed_repr_digest: dict[str, bytes] | None = None
+        if want_repr_digest and complete and len(body) > 0:
+            computed_repr_digest = {}
+            for alg in sorted(want_repr_digest.keys()):
+                if want_repr_digest[alg] > 0:
+                    computed_repr_digest[alg] = compute_digest(alg, body)
+
         upload = Upload(
             upload_id=upload_id,
             uri=uri,
@@ -169,7 +227,20 @@ class RufhServer(ABC):
             complete=complete,
             length=inferred_length,
             limits=self._limits,
+            repr_digest=computed_repr_digest,
         )
+
+        if repr_digest:
+            for alg, expected in repr_digest.items():
+                if len(body) > 0:
+                    computed = compute_digest(alg, body)
+                    if computed != expected:
+                        raise DigestMismatchError(
+                            header_name="Repr-Digest",
+                            algorithm=alg,
+                            expected=expected,
+                            actual=computed,
+                        )
 
         with self._lock:
             self._uploads[upload_id] = upload
@@ -208,8 +279,17 @@ class RufhServer(ABC):
         upload_offset: int,
         complete: bool = False,
         upload_length: int | None = None,
+        content_digest: dict[str, bytes] | None = None,
+        want_repr_digest: dict[str, int] | None = None,
     ) -> Upload:
         """Append data to an upload resource (§4.4).
+
+        Parameters
+        ----------
+        content_digest:
+            Content-Digest header value (RFC 9530 §2) for verifying request content.
+        want_repr_digest:
+            Want-Repr-Digest header value (RFC 9530 §4) for computing representation digest.
 
         Returns
         -------
@@ -225,6 +305,8 @@ class RufhServer(ABC):
         UploadAlreadyCompleteError
             If the upload is already complete.
         """
+        from .headers import compute_digest
+
         upload = self._get_upload(uri)
         if upload is None:
             raise UploadNotFoundError(uri)
@@ -234,10 +316,27 @@ class RufhServer(ABC):
         else:
             body = data.read() if hasattr(data, "read") else data
 
+        if content_digest:
+            for alg, expected in content_digest.items():
+                computed = compute_digest(alg, body)
+                if computed != expected:
+                    raise DigestMismatchError(
+                        header_name="Content-Digest",
+                        algorithm=alg,
+                        expected=expected,
+                        actual=computed,
+                    )
+
         upload.append(body, upload_offset)
 
         if complete:
             upload.finish(upload_length)
+            if want_repr_digest and len(upload.data) > 0:
+                computed_repr_digest = {}
+                for alg in sorted(want_repr_digest.keys()):
+                    if want_repr_digest[alg] > 0:
+                        computed_repr_digest[alg] = compute_digest(alg, bytes(upload.data))
+                upload.repr_digest = computed_repr_digest
 
         with self._lock:
             self._uploads[upload.upload_id] = upload

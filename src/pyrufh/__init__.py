@@ -39,9 +39,11 @@ import importlib.util
 from .client import DEFAULT_CHUNK_SIZE, RufhClient
 from .exceptions import (
     CompletedUploadError,
+    ContentDigestMismatchError,
     InconsistentLengthError,
     MismatchingOffsetError,
     OffsetRetrievalError,
+    RepresentationDigestMismatchError,
     RufhError,
     UploadAppendError,
     UploadCancellationError,
@@ -53,8 +55,18 @@ from .exceptions import (
 )
 from .headers import (
     CONTENT_TYPE_PARTIAL_UPLOAD,
+    DIGEST_ALGORITHMS,
     DRAFT_INTEROP_VERSION,
     UploadLimits,
+    build_content_digest_header,
+    build_repr_digest_header,
+    build_want_content_digest_header,
+    build_want_repr_digest_header,
+    compute_digest,
+    parse_content_digest,
+    parse_repr_digest,
+    parse_want_content_digest,
+    parse_want_repr_digest,
 )
 from .models import UploadCreationResult, UploadResource
 from .server import (
@@ -70,14 +82,17 @@ from .transport import InterimCapturingTransport, InterimResponse
 __all__ = [
     "CONTENT_TYPE_PARTIAL_UPLOAD",
     "DEFAULT_CHUNK_SIZE",
+    "DIGEST_ALGORITHMS",
     "DRAFT_INTEROP_VERSION",
     "CompletedUploadError",
+    "ContentDigestMismatchError",
     "InMemoryRufhServer",
     "InconsistentLengthError",
     "InterimCapturingTransport",
     "InterimResponse",
     "MismatchingOffsetError",
     "OffsetRetrievalError",
+    "RepresentationDigestMismatchError",
     "RufhClient",
     "RufhError",
     "RufhServer",
@@ -95,6 +110,15 @@ __all__ = [
     "UploadNotResumableError",
     "UploadOffsetMismatchError",
     "UploadResource",
+    "build_content_digest_header",
+    "build_repr_digest_header",
+    "build_want_content_digest_header",
+    "build_want_repr_digest_header",
+    "compute_digest",
+    "parse_content_digest",
+    "parse_repr_digest",
+    "parse_want_content_digest",
+    "parse_want_repr_digest",
 ]
 
 if importlib.util.find_spec("fastapi") is not None:
