@@ -14,6 +14,8 @@ from pyrufh.headers import (
     build_upload_length_header,
     build_upload_offset_header,
     build_want_content_digest_header,
+    build_want_digest_header,
+    build_want_repr_digest_header,
     compute_digest,
     draft_interop_headers,
     parse_content_digest,
@@ -210,8 +212,23 @@ class TestDigestBuilding:
         assert parsed is not None
         assert parsed["sha-256"] == sha256
 
-    def test_build_want_digest_header(self):
+    def test_build_want_content_digest_header(self):
         header = build_want_content_digest_header({"sha-256": 10, "sha-512": 5})
+        assert "sha-256=10" in header
+        assert "sha-512=5" in header
+
+    def test_build_want_digest_header(self):
+        # Empty dict
+        assert build_want_digest_header({}) == ""
+        # Single element
+        assert build_want_digest_header({"sha-256": 10}) == "sha-256=10"
+        # Multiple elements (sorting test)
+        header = build_want_digest_header({"sha-512": 5, "sha-256": 10, "md5": 0})
+        # The keys should be sorted alphabetically: md5, sha-256, sha-512
+        assert header == "md5=0, sha-256=10, sha-512=5"
+
+    def test_build_want_repr_digest_header(self):
+        header = build_want_repr_digest_header({"sha-256": 10, "sha-512": 5})
         assert "sha-256=10" in header
         assert "sha-512=5" in header
 
