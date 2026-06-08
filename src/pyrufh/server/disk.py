@@ -273,33 +273,33 @@ class DiskRufhServer(RufhServer):
         Returns an Upload with data loaded into memory. For large files,
         consider using get_upload_info() instead to avoid memory usage.
         """
-        for upload_id in self._list_upload_ids():
-            meta = self._read_meta(upload_id)
-            if meta is not None and meta.uri == uri:
-                if meta.is_expired():
-                    self._delete_files(upload_id)
-                    return None
-                data_path = self._data_path(upload_id)
-                if data_path.exists():
-                    lock_fd = self._acquire_lock(upload_id)
-                    try:
-                        with open(data_path, "rb") as f:
-                            data = f.read()
-                    finally:
-                        self._release_lock(lock_fd, upload_id)
-                    return Upload(
-                        upload_id=meta.upload_id,
-                        uri=meta.uri,
-                        data=bytearray(data),
-                        offset=meta.offset,
-                        complete=meta.complete,
-                        length=meta.length,
-                        limits=meta.limits,
-                        max_age=meta.max_age,
-                        repr_digest=None,
-                    )
+        upload_id = uri.rsplit("/", 1)[-1]
+        meta = self._read_meta(upload_id)
+        if meta is not None and meta.uri == uri:
+            if meta.is_expired():
                 self._delete_files(upload_id)
                 return None
+            data_path = self._data_path(upload_id)
+            if data_path.exists():
+                lock_fd = self._acquire_lock(upload_id)
+                try:
+                    with open(data_path, "rb") as f:
+                        data = f.read()
+                finally:
+                    self._release_lock(lock_fd, upload_id)
+                return Upload(
+                    upload_id=meta.upload_id,
+                    uri=meta.uri,
+                    data=bytearray(data),
+                    offset=meta.offset,
+                    complete=meta.complete,
+                    length=meta.length,
+                    limits=meta.limits,
+                    max_age=meta.max_age,
+                    repr_digest=None,
+                )
+            self._delete_files(upload_id)
+            return None
         return None
 
     def get_upload_info(self, uri: str) -> Upload | None:
@@ -308,23 +308,23 @@ class DiskRufhServer(RufhServer):
         Returns an Upload with empty data. Use compute_digest() to verify
         integrity without loading the entire file.
         """
-        for upload_id in self._list_upload_ids():
-            meta = self._read_meta(upload_id)
-            if meta is not None and meta.uri == uri:
-                if meta.is_expired():
-                    self._delete_files(upload_id)
-                    return None
-                return Upload(
-                    upload_id=meta.upload_id,
-                    uri=meta.uri,
-                    data=bytearray(),
-                    offset=meta.offset,
-                    complete=meta.complete,
-                    length=meta.length,
-                    limits=meta.limits,
-                    max_age=meta.max_age,
-                    repr_digest=None,
-                )
+        upload_id = uri.rsplit("/", 1)[-1]
+        meta = self._read_meta(upload_id)
+        if meta is not None and meta.uri == uri:
+            if meta.is_expired():
+                self._delete_files(upload_id)
+                return None
+            return Upload(
+                upload_id=meta.upload_id,
+                uri=meta.uri,
+                data=bytearray(),
+                offset=meta.offset,
+                complete=meta.complete,
+                length=meta.length,
+                limits=meta.limits,
+                max_age=meta.max_age,
+                repr_digest=None,
+            )
         return None
 
     def compute_digest(self, uri: str, algorithm: str = "sha-256") -> bytes | None:
