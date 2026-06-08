@@ -260,7 +260,10 @@ class TestOffsetRetrieval:
             from pyrufh import UploadResource
 
             resource = UploadResource(uri=UPLOAD_RESOURCE_URI)
-            with pytest.raises(OffsetRetrievalError, match="Network error during offset retrieval: Network error"):
+            with pytest.raises(
+                OffsetRetrievalError,
+                match="Network error during offset retrieval: Network error",
+            ):
                 client.get_offset(resource)
 
     def test_redirect_followed(self, httpx_mock: HTTPXMock):
