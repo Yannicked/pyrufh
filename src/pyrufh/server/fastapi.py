@@ -22,7 +22,8 @@ from __future__ import annotations
 import logging
 
 try:
-    from fastapi import FastAPI, Request, Response  # ty: ignore
+    import starlette.concurrency
+    from fastapi import FastAPI, Request, Response
 except ImportError as exc:
     raise ImportError(
         "FastAPI is required for FastAPI integration. Install with: pip install pyrufh[fastapi]"
@@ -71,7 +72,8 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
 
     uri = f"{request.state.base_url}/uploads/{upload_uri}"
     try:
-        upload, status = request.state.server.create_upload(
+        upload, status = await starlette.concurrency.run_in_threadpool(
+            request.state.server.create_upload,
             body,
             method=request.method,
             complete=complete,
@@ -128,7 +130,9 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
 async def get_offset(request: Request, upload_uri: str) -> Response:
     """Handle offset retrieval (HEAD to /uploads/{upload_uri})."""
     try:
-        upload = request.state.server.get_offset(upload_uri)
+        upload = await starlette.concurrency.run_in_threadpool(
+            request.state.server.get_offset, upload_uri
+        )
     except UploadNotFoundError:
         return Response(
             content=b"",
@@ -189,7 +193,8 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
 
     try:
         complete = complete_header if complete_header is not None else False
-        upload = request.state.server.append(
+        upload = await starlette.concurrency.run_in_threadpool(
+            request.state.server.append,
             upload_uri,
             body,
             upload_offset=offset_header,
@@ -252,7 +257,7 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
 async def cancel_upload(request: Request, upload_uri: str) -> Response:
     """Handle upload cancellation (DELETE to /uploads/{upload_uri})."""
     try:
-        request.state.server.cancel(upload_uri)
+        await starlette.concurrency.run_in_threadpool(request.state.server.cancel, upload_uri)
     except UploadNotFoundError:
         return Response(
             content=b"",
