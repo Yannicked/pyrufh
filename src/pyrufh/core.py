@@ -151,8 +151,9 @@ class RufhServer(ABC):
             return bytes(data)
         return data.read() if hasattr(data, "read") else data
 
-    def _verify_content_digest(self, content_digest: dict[str, bytes] | None, body: bytes) -> None:
+    def _verify_content_digest(self, body: bytes, content_digest: dict[str, bytes] | None) -> None:
         from .headers import compute_digest
+
         if not content_digest:
             return
         for alg, expected in content_digest.items():
@@ -171,8 +172,11 @@ class RufhServer(ABC):
         upload_id = self._generate_upload_id()
         return upload_id, self._build_uri(upload_id)
 
-    def _compute_wanted_repr_digest(self, want_repr_digest: dict[str, int] | None, body: bytes, complete: bool) -> dict[str, bytes] | None:
+    def _compute_wanted_repr_digest(
+        self, want_repr_digest: dict[str, int] | None, body: bytes, complete: bool
+    ) -> dict[str, bytes] | None:
         from .headers import compute_digest
+
         if want_repr_digest and complete and len(body) > 0:
             computed_repr_digest = {}
             for alg in sorted(want_repr_digest.keys()):
@@ -181,8 +185,9 @@ class RufhServer(ABC):
             return computed_repr_digest
         return None
 
-    def _verify_repr_digest(self, repr_digest: dict[str, bytes] | None, body: bytes) -> None:
+    def _verify_repr_digest(self, body: bytes, repr_digest: dict[str, bytes] | None) -> None:
         from .headers import compute_digest
+
         if not repr_digest:
             return
         for alg, expected in repr_digest.items():
@@ -233,7 +238,7 @@ class RufhServer(ABC):
             The created Upload and the response status code.
         """
         body = self._read_body_data(data)
-        self._verify_content_digest(content_digest, body)
+        self._verify_content_digest(body, content_digest)
 
         content_length = len(body)
         inferred_length = length
@@ -255,7 +260,7 @@ class RufhServer(ABC):
             repr_digest=computed_repr_digest,
         )
 
-        self._verify_repr_digest(repr_digest, body)
+        self._verify_repr_digest(body, repr_digest)
 
         with self._lock:
             self._uploads[upload_id] = upload
