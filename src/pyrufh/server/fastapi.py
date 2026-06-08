@@ -131,7 +131,7 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
     return Response(content=b"", status_code=status, headers=headers)
 
 
-def get_offset(request: Request, upload_uri: str) -> Response:
+async def get_offset(request: Request, upload_uri: str) -> Response:
     """Handle offset retrieval (HEAD to /uploads/{upload_uri})."""
     try:
         upload = await asyncio.to_thread(request.state.server.get_offset, upload_uri)
@@ -265,7 +265,7 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
     return Response(content=b"", status_code=200, headers=headers)
 
 
-def cancel_upload(request: Request, upload_uri: str) -> Response:
+async def cancel_upload(request: Request, upload_uri: str) -> Response:
     """Handle upload cancellation (DELETE to /uploads/{upload_uri})."""
     try:
         await asyncio.to_thread(request.state.server.cancel, upload_uri)
