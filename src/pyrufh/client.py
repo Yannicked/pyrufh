@@ -483,42 +483,18 @@ class RufhClient:
         UploadAppendError
             On other 4xx or server errors.
         """
-        from .headers import compute_digest
-
         body = bytes(data) if isinstance(data, (bytes, bytearray)) else data.read()
         content_length = len(body)
 
-        if want_digest:
-            if want_digest is True:
-                want_digest = {"sha-256": 10}
-            elif isinstance(want_digest, (list, tuple)):
-                want_digest = dict.fromkeys(want_digest, 10)
-            content_digest = {}
-            for alg in sorted(want_digest.keys()):
-                if want_digest[alg] > 0:
-                    content_digest[alg] = compute_digest(alg, body)
-            if complete:
-                want_repr_digest = want_digest
-
-        headers: dict[str, str] = {
-            **draft_interop_headers(),
-            "Content-Type": CONTENT_TYPE_PARTIAL_UPLOAD,
-            "Upload-Complete": build_upload_complete_header(complete),
-            "Upload-Offset": build_upload_offset_header(upload_resource.offset),
-            "Content-Length": str(content_length),
-        }
-
-        if content_digest:
-            headers["Content-Digest"] = build_content_digest_header(content_digest)
-
-        if want_repr_digest:
-            headers["Want-Repr-Digest"] = build_want_repr_digest_header(want_repr_digest)
-
-        if complete and upload_resource.length is not None:
-            headers["Upload-Length"] = build_upload_length_header(upload_resource.length)
-
-        if extra_headers:
-            headers.update(extra_headers)
+        headers = self._prepare_append_headers(
+            upload_resource,
+            body,
+            complete,
+            extra_headers,
+            content_digest,
+            want_repr_digest,
+            want_digest,
+        )
 
         logger.debug(
             "Appending %d bytes to upload %s at offset %d (complete=%s)",
@@ -537,60 +513,9 @@ class RufhClient:
 
         captured_interim = list(self._interim_responses)
 
-        if response.status_code == 409:
-            expected = parse_upload_offset(response.headers)
-            raise MismatchingOffsetError(
-                expected_offset=expected if expected is not None else -1,
-                provided_offset=upload_resource.offset,
-            )
-
-        if response.status_code in (400, 410, 404):
-            self._raise_for_problem(response, UploadAppendError)
-            raise UploadAppendError(
-                f"Upload append rejected: {response.status_code}",
-                status_code=response.status_code,
-            )
-
-        if 400 <= response.status_code < 500:
-            self._raise_for_problem(response, UploadAppendError)
-            raise UploadAppendError(
-                f"Upload append rejected: {response.status_code}",
-                status_code=response.status_code,
-            )
-
-        if response.status_code >= 500:
-            raise UploadAppendError(
-                f"Server error during upload append: {response.status_code}",
-                status_code=response.status_code,
-            )
-
-        # ---- Update local state from the response ---------------------------
-        # Priority: final response Upload-Offset > 104 Upload-Offset > inferred offset.
-        new_offset = parse_upload_offset(response.headers)
-        if new_offset is not None:
-            upload_resource.offset = new_offset
-        else:
-            # Try the highest Upload-Offset from any 104 interim responses (§4.4.2).
-            # These provide progress information when the final response omits the offset.
-            interim_offset = self._highest_interim_offset(captured_interim)
-            if interim_offset is not None:
-                upload_resource.offset = interim_offset
-            else:
-                # No offset from server at all: infer from bytes sent.
-                upload_resource.offset += content_length
-
-        response_complete = parse_upload_complete(response.headers)
-        if response_complete is not None:
-            upload_resource.complete = response_complete
-        elif complete:
-            upload_resource.complete = True
-
-        new_limits = parse_upload_limits(response.headers)
-        if new_limits is not None:
-            upload_resource.limits = new_limits
-
-        if upload_resource.complete:
-            upload_resource.final_response = response
+        self._handle_append_response(
+            response, upload_resource, content_length, complete, captured_interim
+        )
 
         return response
 
@@ -817,6 +742,119 @@ class RufhClient:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _prepare_append_headers(
+        upload_resource: UploadResource,
+        body: bytes,
+        complete: bool,
+        extra_headers: dict[str, str] | None,
+        content_digest: dict[str, bytes] | None,
+        want_repr_digest: dict[str, int] | None,
+        want_digest: bool | list[str] | tuple[str, ...] | dict[str, int] | None,
+    ) -> dict[str, str]:
+        """Prepare headers for a PATCH append request."""
+        from .headers import compute_digest
+
+        content_length = len(body)
+
+        if want_digest:
+            if want_digest is True:
+                want_digest = {"sha-256": 10}
+            elif isinstance(want_digest, (list, tuple)):
+                want_digest = dict.fromkeys(want_digest, 10)
+            content_digest = {}
+            for alg in sorted(want_digest.keys()):
+                if want_digest[alg] > 0:
+                    content_digest[alg] = compute_digest(alg, body)
+            if complete:
+                want_repr_digest = want_digest
+
+        headers: dict[str, str] = {
+            **draft_interop_headers(),
+            "Content-Type": CONTENT_TYPE_PARTIAL_UPLOAD,
+            "Upload-Complete": build_upload_complete_header(complete),
+            "Upload-Offset": build_upload_offset_header(upload_resource.offset),
+            "Content-Length": str(content_length),
+        }
+
+        if content_digest:
+            headers["Content-Digest"] = build_content_digest_header(content_digest)
+
+        if want_repr_digest:
+            headers["Want-Repr-Digest"] = build_want_repr_digest_header(want_repr_digest)
+
+        if complete and upload_resource.length is not None:
+            headers["Upload-Length"] = build_upload_length_header(upload_resource.length)
+
+        if extra_headers:
+            headers.update(extra_headers)
+
+        return headers
+
+    def _handle_append_response(
+        self,
+        response: httpx.Response,
+        upload_resource: UploadResource,
+        content_length: int,
+        complete: bool,
+        captured_interim: list[InterimResponse],
+    ) -> None:
+        """Handle response from append request, raising errors or updating state."""
+        if response.status_code == 409:
+            expected = parse_upload_offset(response.headers)
+            raise MismatchingOffsetError(
+                expected_offset=expected if expected is not None else -1,
+                provided_offset=upload_resource.offset,
+            )
+
+        if response.status_code in (400, 410, 404):
+            self._raise_for_problem(response, UploadAppendError)
+            raise UploadAppendError(
+                f"Upload append rejected: {response.status_code}",
+                status_code=response.status_code,
+            )
+
+        if 400 <= response.status_code < 500:
+            self._raise_for_problem(response, UploadAppendError)
+            raise UploadAppendError(
+                f"Upload append rejected: {response.status_code}",
+                status_code=response.status_code,
+            )
+
+        if response.status_code >= 500:
+            raise UploadAppendError(
+                f"Server error during upload append: {response.status_code}",
+                status_code=response.status_code,
+            )
+
+        # ---- Update local state from the response ---------------------------
+        # Priority: final response Upload-Offset > 104 Upload-Offset > inferred offset.
+        new_offset = parse_upload_offset(response.headers)
+        if new_offset is not None:
+            upload_resource.offset = new_offset
+        else:
+            # Try the highest Upload-Offset from any 104 interim responses (§4.4.2).
+            # These provide progress information when the final response omits the offset.
+            interim_offset = self._highest_interim_offset(captured_interim)
+            if interim_offset is not None:
+                upload_resource.offset = interim_offset
+            else:
+                # No offset from server at all: infer from bytes sent.
+                upload_resource.offset += content_length
+
+        response_complete = parse_upload_complete(response.headers)
+        if response_complete is not None:
+            upload_resource.complete = response_complete
+        elif complete:
+            upload_resource.complete = True
+
+        new_limits = parse_upload_limits(response.headers)
+        if new_limits is not None:
+            upload_resource.limits = new_limits
+
+        if upload_resource.complete:
+            upload_resource.final_response = response
 
     @staticmethod
     def _first_interim_location(
