@@ -416,6 +416,21 @@ class TestUploadCancellation:
             with pytest.raises(UploadCancellationError):
                 client.cancel(resource)
 
+    def test_cancel_network_error_raises(self, httpx_mock: HTTPXMock):
+        import httpx
+        httpx_mock.add_exception(
+            httpx.RequestError("Mocked network error"),
+            method="DELETE",
+            url=UPLOAD_RESOURCE_URI,
+        )
+
+        with RufhClient() as client:
+            from pyrufh import UploadResource
+
+            resource = UploadResource(uri=UPLOAD_RESOURCE_URI)
+            with pytest.raises(UploadCancellationError, match="Network error during upload cancellation"):
+                client.cancel(resource)
+
 
 # ---------------------------------------------------------------------------
 # §12.1  Optimistic Upload (client.upload)
