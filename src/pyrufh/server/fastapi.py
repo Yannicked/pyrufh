@@ -129,7 +129,7 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
     return Response(content=b"", status_code=status, headers=headers)
 
 
-async def get_offset(request: Request, upload_uri: str) -> Response:
+def get_offset(request: Request, upload_uri: str) -> Response:
     """Handle offset retrieval (HEAD to /uploads/{upload_uri})."""
     try:
         upload = request.state.server.get_offset(upload_uri)
@@ -262,7 +262,7 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
     return Response(content=b"", status_code=200, headers=headers)
 
 
-async def cancel_upload(request: Request, upload_uri: str) -> Response:
+def cancel_upload(request: Request, upload_uri: str) -> Response:
     """Handle upload cancellation (DELETE to /uploads/{upload_uri})."""
     try:
         request.state.server.cancel(upload_uri)
