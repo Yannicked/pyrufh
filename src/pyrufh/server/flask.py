@@ -13,6 +13,7 @@ Example usage::
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING, cast
 
@@ -102,9 +103,18 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
         except DigestMismatchError as e:
             import base64
 
+            body = json.dumps(
+                {
+                    "type": "https://iana.org/assignments/http-problem-types#digest-mismatch",
+                    "title": "Digest mismatch",
+                    "algorithm": e.algorithm,
+                    "expected": base64.b64encode(e.expected).decode(),
+                    "actual": base64.b64encode(e.actual).decode(),
+                }
+            )
             return flask.make_response(
                 (
-                    f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch","title":"Digest mismatch","algorithm":"{e.algorithm}","expected":"{base64.b64encode(e.expected).decode()}","actual":"{base64.b64encode(e.actual).decode()}"}}',
+                    body,
                     400,
                     {"Content-Type": "application/problem+json"},
                 )
@@ -228,9 +238,17 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
                 )
             )
         except UploadOffsetMismatchError as e:
+            body = json.dumps(
+                {
+                    "type": "https://iana.org/assignments/http-problem-types#mismatching-upload-offset",
+                    "title": "Offset mismatch",
+                    "expected-offset": e.expected_offset,
+                    "provided-offset": e.provided_offset,
+                }
+            )
             return flask.make_response(
                 (
-                    f'{{"type":"https://iana.org/assignments/http-problem-types#mismatching-upload-offset","title":"Offset mismatch","expected-offset":{e.expected_offset},"provided-offset":{e.provided_offset}}}',
+                    body,
                     409,
                     {"Content-Type": "application/problem+json"},
                 )
@@ -254,9 +272,18 @@ def setup_flask_routes(app: flask.Flask, server: RufhServer) -> None:
         except DigestMismatchError as e:
             import base64
 
+            body = json.dumps(
+                {
+                    "type": "https://iana.org/assignments/http-problem-types#digest-mismatch",
+                    "title": "Digest mismatch",
+                    "algorithm": e.algorithm,
+                    "expected": base64.b64encode(e.expected).decode(),
+                    "actual": base64.b64encode(e.actual).decode(),
+                }
+            )
             return flask.make_response(
                 (
-                    f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch","title":"Digest mismatch","algorithm":"{e.algorithm}","expected":"{base64.b64encode(e.expected).decode()}","actual":"{base64.b64encode(e.actual).decode()}"}}',
+                    body,
                     400,
                     {"Content-Type": "application/problem+json"},
                 )
