@@ -9,6 +9,8 @@ import pytest
 if TYPE_CHECKING:
     from pytest_httpx import HTTPXMock
 
+import httpx
+
 from pyrufh import (
     CompletedUploadError,
     MismatchingOffsetError,
@@ -117,6 +119,15 @@ class TestUploadCreation:
             client.create_upload(TARGET_URL, b"data")
 
         assert exc_info.value.status_code == 500
+
+    def test_network_error_raises_creation_error(self, httpx_mock: HTTPXMock):
+        httpx_mock.add_exception(httpx.ConnectError("Network Error"), url=TARGET_URL)
+
+        with RufhClient() as client, pytest.raises(UploadCreationError) as exc_info:
+            client.create_upload(TARGET_URL, b"data")
+
+        assert "Network error during upload creation:" in str(exc_info.value)
+        assert "Network Error" in str(exc_info.value)
 
     def test_missing_location_raises(self, httpx_mock: HTTPXMock):
         """Server returns 201 without Location header - should raise."""
