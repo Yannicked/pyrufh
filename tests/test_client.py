@@ -420,7 +420,7 @@ class TestUploadCancellation:
         import httpx
 
         httpx_mock.add_exception(
-            httpx.RequestError("Mocked network error"),
+            httpx.RequestError("mocked network error"),
             method="DELETE",
             url=UPLOAD_RESOURCE_URI,
         )

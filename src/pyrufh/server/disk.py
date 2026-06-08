@@ -273,33 +273,33 @@ class DiskRufhServer(RufhServer):
         Returns an Upload with data loaded into memory. For large files,
         consider using get_upload_info() instead to avoid memory usage.
         """
-        for upload_id in self._list_upload_ids():
-            meta = self._read_meta(upload_id)
-            if meta is not None and meta.uri == uri:
-                if meta.is_expired():
-                    self._delete_files(upload_id)
-                    return None
-                data_path = self._data_path(upload_id)
-                if data_path.exists():
-                    lock_fd = self._acquire_lock(upload_id)
-                    try:
-                        with open(data_path, "rb") as f:
-                            data = f.read()
-                    finally:
-                        self._release_lock(lock_fd, upload_id)
-                    return Upload(
-                        upload_id=meta.upload_id,
-                        uri=meta.uri,
-                        data=bytearray(data),
-                        offset=meta.offset,
-                        complete=meta.complete,
-                        length=meta.length,
-                        limits=meta.limits,
-                        max_age=meta.max_age,
-                        repr_digest=None,
-                    )
+        upload_id = uri.rsplit("/", 1)[-1]
+        meta = self._read_meta(upload_id)
+        if meta is not None and meta.uri == uri:
+            if meta.is_expired():
                 self._delete_files(upload_id)
                 return None
+            data_path = self._data_path(upload_id)
+            if data_path.exists():
+                lock_fd = self._acquire_lock(upload_id)
+                try:
+                    with open(data_path, "rb") as f:
+                        data = f.read()
+                finally:
+                    self._release_lock(lock_fd, upload_id)
+                return Upload(
+                    upload_id=meta.upload_id,
+                    uri=meta.uri,
+                    data=bytearray(data),
+                    offset=meta.offset,
+                    complete=meta.complete,
+                    length=meta.length,
+                    limits=meta.limits,
+                    max_age=meta.max_age,
+                    repr_digest=None,
+                )
+            self._delete_files(upload_id)
+            return None
         return None
 
     def get_upload_info(self, uri: str) -> Upload | None:
@@ -308,23 +308,23 @@ class DiskRufhServer(RufhServer):
         Returns an Upload with empty data. Use compute_digest() to verify
         integrity without loading the entire file.
         """
-        for upload_id in self._list_upload_ids():
-            meta = self._read_meta(upload_id)
-            if meta is not None and meta.uri == uri:
-                if meta.is_expired():
-                    self._delete_files(upload_id)
-                    return None
-                return Upload(
-                    upload_id=meta.upload_id,
-                    uri=meta.uri,
-                    data=bytearray(),
-                    offset=meta.offset,
-                    complete=meta.complete,
-                    length=meta.length,
-                    limits=meta.limits,
-                    max_age=meta.max_age,
-                    repr_digest=None,
-                )
+        upload_id = uri.rsplit("/", 1)[-1]
+        meta = self._read_meta(upload_id)
+        if meta is not None and meta.uri == uri:
+            if meta.is_expired():
+                self._delete_files(upload_id)
+                return None
+            return Upload(
+                upload_id=meta.upload_id,
+                uri=meta.uri,
+                data=bytearray(),
+                offset=meta.offset,
+                complete=meta.complete,
+                length=meta.length,
+                limits=meta.limits,
+                max_age=meta.max_age,
+                repr_digest=None,
+            )
         return None
 
     def compute_digest(self, uri: str, algorithm: str = "sha-256") -> bytes | None:
@@ -348,6 +348,85 @@ class DiskRufhServer(RufhServer):
         upload_id = uri.rsplit("/", 1)[-1]
         return self._compute_file_digest(upload_id, algorithm)
 
+    def _get_body_bytes(self, data: bytes | BinaryIO) -> bytes:
+        if isinstance(data, (bytes, bytearray)):
+            return bytes(data)
+        return data.read() if hasattr(data, "read") else data  # type: ignore[no-any-return, union-attr]
+
+    def _verify_content_digest(self, body: bytes, content_digest: dict[str, bytes] | None) -> None:
+        if not content_digest:
+            return
+
+        from ..headers import compute_digest
+
+        for alg, expected in content_digest.items():
+            computed = compute_digest(alg, body)
+            if computed != expected:
+                raise DigestMismatchError(
+                    header_name="Content-Digest",
+                    algorithm=alg,
+                    expected=expected,
+                    actual=computed,
+                )
+
+    def _resolve_upload_id_and_uri(self, uri: str | None) -> tuple[str, str]:
+        if uri is not None:
+            return uri.rsplit("/", 1)[-1], uri
+        upload_id = self._generate_upload_id()
+        return upload_id, self._build_uri(upload_id)
+
+    def _write_upload_data(self, upload_id: str, body: bytes) -> None:
+        with open(self._data_path(upload_id), "wb") as f:
+            f.write(body)
+            f.flush()
+            os.fsync(f.fileno())
+
+    def _compute_repr_digest_if_wanted(
+        self, body: bytes, complete: bool, want_repr_digest: dict[str, int] | None
+    ) -> dict[str, bytes] | None:
+        if not want_repr_digest or not complete or len(body) == 0:
+            return None
+
+        from ..headers import compute_digest
+
+        computed_repr_digest = {}
+        for alg in sorted(want_repr_digest.keys()):
+            if want_repr_digest[alg] > 0:
+                computed_repr_digest[alg] = compute_digest(alg, body)
+        return computed_repr_digest
+
+    def _verify_repr_digest(self, body: bytes, repr_digest: dict[str, bytes] | None) -> None:
+        if not repr_digest or len(body) == 0:
+            return
+
+        from ..headers import compute_digest
+
+        for alg, expected in repr_digest.items():
+            computed = compute_digest(alg, body)
+            if computed != expected:
+                raise DigestMismatchError(
+                    header_name="Repr-Digest",
+                    algorithm=alg,
+                    expected=expected,
+                    actual=computed,
+                )
+
+    def _store_initial_metadata(self, upload: Upload) -> None:
+        now = time.time()
+        metadata = _UploadMetadata(
+            upload_id=upload.upload_id,
+            uri=upload.uri,
+            offset=upload.offset,
+            complete=upload.complete,
+            length=upload.length,
+            limits=upload.limits,
+            max_age=upload.max_age,
+            created_at=now,
+            updated_at=now,
+            repr_digest=None,
+        )
+        self._write_meta(metadata)
+
     def create_upload(
         self,
         data: bytes | BinaryIO,
@@ -363,53 +442,27 @@ class DiskRufhServer(RufhServer):
         want_content_digest: dict[str, int] | None = None,
     ) -> tuple[Upload, int]:
         """Create a new upload resource and stream data directly to disk."""
-        from ..headers import compute_digest
+        body = self._get_body_bytes(data)
+        self._verify_content_digest(body, content_digest)
 
-        if isinstance(data, (bytes, bytearray)):
-            body = bytes(data)
-        else:
-            body = data.read() if hasattr(data, "read") else data
-
-        if content_digest:
-            for alg, expected in content_digest.items():
-                computed = compute_digest(alg, body)
-                if computed != expected:
-                    raise DigestMismatchError(
-                        header_name="Content-Digest",
-                        algorithm=alg,
-                        expected=expected,
-                        actual=computed,
-                    )
-
-        content_length = len(body)  # type: ignore[arg-type]
+        content_length = len(body)
         inferred_length = length
 
         if complete and inferred_length is None and content_length > 0:
             inferred_length = content_length
 
-        if uri is not None:
-            upload_id = uri.rsplit("/", 1)[-1]
-        else:
-            upload_id = self._generate_upload_id()
-            uri = self._build_uri(upload_id)
+        upload_id, resolved_uri = self._resolve_upload_id_and_uri(uri)
 
         lock_fd = self._acquire_lock(upload_id)
         try:
-            with open(self._data_path(upload_id), "wb") as f:
-                f.write(body)  # type: ignore[arg-type]
-                f.flush()
-                os.fsync(f.fileno())
-
-            computed_repr_digest: dict[str, bytes] | None = None
-            if want_repr_digest and complete and len(body) > 0:  # type: ignore[arg-type]
-                computed_repr_digest = {}
-                for alg in sorted(want_repr_digest.keys()):
-                    if want_repr_digest[alg] > 0:
-                        computed_repr_digest[alg] = compute_digest(alg, body)
+            self._write_upload_data(upload_id, body)
+            computed_repr_digest = self._compute_repr_digest_if_wanted(
+                body, complete, want_repr_digest
+            )
 
             upload = Upload(
                 upload_id=upload_id,
-                uri=uri,
+                uri=resolved_uri,
                 data=bytearray(),
                 offset=content_length,
                 complete=complete,
@@ -418,36 +471,12 @@ class DiskRufhServer(RufhServer):
                 repr_digest=computed_repr_digest,
             )
 
-            if repr_digest:
-                for alg, expected in repr_digest.items():
-                    if len(body) > 0:
-                        computed = compute_digest(alg, body)
-                        if computed != expected:
-                            raise DigestMismatchError(
-                                header_name="Repr-Digest",
-                                algorithm=alg,
-                                expected=expected,
-                                actual=computed,
-                            )
+            self._verify_repr_digest(body, repr_digest)
 
             with self._lock:
                 self._uploads[upload_id] = upload
 
-            now = time.time()
-            metadata = _UploadMetadata(
-                upload_id=upload.upload_id,
-                uri=upload.uri,
-                offset=upload.offset,
-                complete=upload.complete,
-                length=upload.length,
-                limits=upload.limits,
-                max_age=upload.max_age,
-                created_at=now,
-                updated_at=now,
-                repr_digest=None,
-            )
-            self._write_meta(metadata)
-
+            self._store_initial_metadata(upload)
             status = 200 if complete and upload.offset == upload.length else 201
         finally:
             self._release_lock(lock_fd, upload_id)
@@ -469,29 +498,14 @@ class DiskRufhServer(RufhServer):
 
         Data is streamed directly to disk to avoid memory usage.
         """
-        from ..headers import compute_digest
-
         upload = self._get_upload(uri)
         if upload is None:
             from ..core import UploadNotFoundError
 
             raise UploadNotFoundError(uri)
 
-        if isinstance(data, (bytes, bytearray)):
-            body = bytes(data)
-        else:
-            body = data.read() if hasattr(data, "read") else data
-
-        if content_digest:
-            for alg, expected in content_digest.items():
-                computed = compute_digest(alg, body)
-                if computed != expected:
-                    raise DigestMismatchError(
-                        header_name="Content-Digest",
-                        algorithm=alg,
-                        expected=expected,
-                        actual=computed,
-                    )
+        body = self._get_body_bytes(data)
+        self._verify_content_digest(body, content_digest)
 
         written = self._append_chunk_to_file(upload.upload_id, body)
         upload.offset += written
