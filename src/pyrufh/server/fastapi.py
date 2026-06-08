@@ -19,7 +19,6 @@ Or use the standalone ASGI app::
 
 from __future__ import annotations
 
-import asyncio
 import logging
 
 try:
@@ -72,8 +71,7 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
 
     uri = f"{request.state.base_url}/uploads/{upload_uri}"
     try:
-        upload, status = await asyncio.to_thread(
-            request.state.server.create_upload,
+        upload, status = request.state.server.create_upload(
             body,
             method=request.method,
             complete=complete,
@@ -87,16 +85,12 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
         )
     except DigestMismatchError as e:
         import base64
-        import json
 
-        body = json.dumps(
-            {
-                "type": "https://iana.org/assignments/http-problem-types#digest-mismatch",
-                "title": "Digest mismatch",
-                "algorithm": e.algorithm,
-                "expected": base64.b64encode(e.expected).decode(),
-                "actual": base64.b64encode(e.actual).decode(),
-            }
+        body = (
+            f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch",'
+            f'"title":"Digest mismatch","algorithm":"{e.algorithm}",'
+            f'"expected":"{base64.b64encode(e.expected).decode()}",'
+            f'"actual":"{base64.b64encode(e.actual).decode()}"}}'
         ).encode()
         return Response(content=body, status_code=400, media_type="application/problem+json")
 
@@ -134,7 +128,7 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
 async def get_offset(request: Request, upload_uri: str) -> Response:
     """Handle offset retrieval (HEAD to /uploads/{upload_uri})."""
     try:
-        upload = await asyncio.to_thread(request.state.server.get_offset, upload_uri)
+        upload = request.state.server.get_offset(upload_uri)
     except UploadNotFoundError:
         return Response(
             content=b"",
@@ -195,8 +189,7 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
 
     try:
         complete = complete_header if complete_header is not None else False
-        upload = await asyncio.to_thread(
-            request.state.server.append,
+        upload = request.state.server.append(
             upload_uri,
             body,
             upload_offset=offset_header,
@@ -212,15 +205,10 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
             media_type="application/problem+json",
         )
     except UploadOffsetMismatchError as e:
-        import json
-
-        body = json.dumps(
-            {
-                "type": "https://iana.org/assignments/http-problem-types#mismatching-upload-offset",
-                "title": "Offset mismatch",
-                "expected-offset": e.expected_offset,
-                "provided-offset": e.provided_offset,
-            }
+        body = (
+            f'{{"type":"https://iana.org/assignments/http-problem-types#mismatching-upload-offset",'
+            f'"title":"Offset mismatch","expected-offset":{e.expected_offset},'
+            f'"provided-offset":{e.provided_offset}}}'
         ).encode()
         return Response(content=body, status_code=409, media_type="application/problem+json")
     except UploadAlreadyCompleteError:
@@ -237,16 +225,12 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
         )
     except DigestMismatchError as e:
         import base64
-        import json
 
-        body = json.dumps(
-            {
-                "type": "https://iana.org/assignments/http-problem-types#digest-mismatch",
-                "title": "Digest mismatch",
-                "algorithm": e.algorithm,
-                "expected": base64.b64encode(e.expected).decode(),
-                "actual": base64.b64encode(e.actual).decode(),
-            }
+        body = (
+            f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch",'
+            f'"title":"Digest mismatch","algorithm":"{e.algorithm}",'
+            f'"expected":"{base64.b64encode(e.expected).decode()}",'
+            f'"actual":"{base64.b64encode(e.actual).decode()}"}}'
         ).encode()
         return Response(content=body, status_code=400, media_type="application/problem+json")
 
@@ -268,7 +252,7 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
 async def cancel_upload(request: Request, upload_uri: str) -> Response:
     """Handle upload cancellation (DELETE to /uploads/{upload_uri})."""
     try:
-        await asyncio.to_thread(request.state.server.cancel, upload_uri)
+        request.state.server.cancel(upload_uri)
     except UploadNotFoundError:
         return Response(
             content=b"",

@@ -146,61 +146,6 @@ class RufhServer(ABC):
         """Remove an upload from storage."""
         pass
 
-    def _read_body_data(self, data: bytes | BinaryIO) -> bytes:
-        if isinstance(data, (bytes, bytearray)):
-            return bytes(data)
-        return data.read() if hasattr(data, "read") else data
-
-    def _verify_content_digest(self, body: bytes, content_digest: dict[str, bytes] | None) -> None:
-        from .headers import compute_digest
-
-        if not content_digest:
-            return
-        for alg, expected in content_digest.items():
-            computed = compute_digest(alg, body)
-            if computed != expected:
-                raise DigestMismatchError(
-                    header_name="Content-Digest",
-                    algorithm=alg,
-                    expected=expected,
-                    actual=computed,
-                )
-
-    def _resolve_uri_and_id(self, uri: str | None) -> tuple[str, str]:
-        if uri is not None:
-            return uri.rsplit("/", 1)[-1], uri
-        upload_id = self._generate_upload_id()
-        return upload_id, self._build_uri(upload_id)
-
-    def _compute_wanted_repr_digest(
-        self, want_repr_digest: dict[str, int] | None, body: bytes, complete: bool
-    ) -> dict[str, bytes] | None:
-        from .headers import compute_digest
-
-        if want_repr_digest and complete and len(body) > 0:
-            computed_repr_digest = {}
-            for alg in sorted(want_repr_digest.keys()):
-                if want_repr_digest[alg] > 0:
-                    computed_repr_digest[alg] = compute_digest(alg, body)
-            return computed_repr_digest
-        return None
-
-    def _verify_repr_digest(self, body: bytes, repr_digest: dict[str, bytes] | None) -> None:
-        from .headers import compute_digest
-
-        if not repr_digest:
-            return
-        for alg, expected in repr_digest.items():
-            if len(body) > 0:
-                computed = compute_digest(alg, body)
-                if computed != expected:
-                    raise DigestMismatchError(
-                        header_name="Repr-Digest",
-                        algorithm=alg,
-                        expected=expected,
-                        actual=computed,
-                    )
-
     def create_upload(
         self,
         data: bytes | BinaryIO,
@@ -237,8 +182,23 @@ class RufhServer(ABC):
         tuple[Upload, int]
             The created Upload and the response status code.
         """
-        body = self._read_body_data(data)
-        self._verify_content_digest(body, content_digest)
+        from .headers import compute_digest
+
+        if isinstance(data, (bytes, bytearray)):
+            body = bytes(data)
+        else:
+            body = data.read() if hasattr(data, "read") else data
+
+        if content_digest:
+            for alg, expected in content_digest.items():
+                computed = compute_digest(alg, body)
+                if computed != expected:
+                    raise DigestMismatchError(
+                        header_name="Content-Digest",
+                        algorithm=alg,
+                        expected=expected,
+                        actual=computed,
+                    )
 
         content_length = len(body)
         inferred_length = length
@@ -246,8 +206,18 @@ class RufhServer(ABC):
         if complete and inferred_length is None and content_length > 0:
             inferred_length = content_length
 
-        upload_id, uri = self._resolve_uri_and_id(uri)
-        computed_repr_digest = self._compute_wanted_repr_digest(want_repr_digest, body, complete)
+        if uri is not None:
+            upload_id = uri.rsplit("/", 1)[-1]
+        else:
+            upload_id = self._generate_upload_id()
+            uri = self._build_uri(upload_id)
+
+        computed_repr_digest: dict[str, bytes] | None = None
+        if want_repr_digest and complete and len(body) > 0:
+            computed_repr_digest = {}
+            for alg in sorted(want_repr_digest.keys()):
+                if want_repr_digest[alg] > 0:
+                    computed_repr_digest[alg] = compute_digest(alg, body)
 
         upload = Upload(
             upload_id=upload_id,
@@ -260,7 +230,17 @@ class RufhServer(ABC):
             repr_digest=computed_repr_digest,
         )
 
-        self._verify_repr_digest(body, repr_digest)
+        if repr_digest:
+            for alg, expected in repr_digest.items():
+                if len(body) > 0:
+                    computed = compute_digest(alg, body)
+                    if computed != expected:
+                        raise DigestMismatchError(
+                            header_name="Repr-Digest",
+                            algorithm=alg,
+                            expected=expected,
+                            actual=computed,
+                        )
 
         with self._lock:
             self._uploads[upload_id] = upload
