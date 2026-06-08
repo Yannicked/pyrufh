@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from pyrufh.headers import (
+    DRAFT_INTEROP_VERSION,
     UploadLimits,
     build_content_digest_header,
     build_repr_digest_header,
@@ -14,6 +15,7 @@ from pyrufh.headers import (
     build_upload_offset_header,
     build_want_content_digest_header,
     compute_digest,
+    draft_interop_headers,
     parse_content_digest,
     parse_repr_digest,
     parse_upload_complete,
@@ -237,3 +239,7 @@ class TestComputeDigest:
     def test_unsupported_algorithm(self):
         with pytest.raises(ValueError, match="Unsupported"):
             compute_digest("unknown-algo", b"data")
+
+
+def test_draft_interop_headers():
+    assert draft_interop_headers() == {"Upload-Draft-Interop-Version": str(DRAFT_INTEROP_VERSION)}
