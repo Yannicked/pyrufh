@@ -15,6 +15,7 @@ from pyrufh.headers import (
     build_want_content_digest_header,
     compute_digest,
     parse_content_digest,
+    parse_location,
     parse_repr_digest,
     parse_upload_complete,
     parse_upload_length,
@@ -27,6 +28,16 @@ from pyrufh.headers import (
 
 def make_headers(**kwargs: str) -> httpx.Headers:
     return httpx.Headers(kwargs)
+
+
+class TestParseLocation:
+    def test_present(self):
+        h = make_headers(**{"location": "https://example.com/upload/123"})
+        assert parse_location(h) == "https://example.com/upload/123"
+
+    def test_missing(self):
+        h = make_headers()
+        assert parse_location(h) is None
 
 
 class TestParseUploadOffset:
