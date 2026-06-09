@@ -280,6 +280,24 @@ class TestOffsetRetrieval:
 
 
 class TestUploadAppend:
+    def test_network_error_raises(self, httpx_mock: HTTPXMock):
+        import httpx
+
+        httpx_mock.add_exception(
+            httpx.RequestError(
+                "Connection failed", request=httpx.Request("PATCH", UPLOAD_RESOURCE_URI)
+            ),
+            method="PATCH",
+            url=UPLOAD_RESOURCE_URI,
+        )
+
+        with RufhClient() as client:
+            from pyrufh import UploadAppendError, UploadResource
+
+            resource = UploadResource(uri=UPLOAD_RESOURCE_URI, offset=0)
+            with pytest.raises(UploadAppendError, match="Network error during upload append:"):
+                client.append(resource, b"data", complete=False)
+
     def test_partial_append(self, httpx_mock: HTTPXMock):
         httpx_mock.add_response(
             method="PATCH",
