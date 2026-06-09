@@ -230,55 +230,20 @@ class RufhClient:
         UploadCreationError
             If the server responds with a 4xx (non-retryable) error.
         """
-        from .headers import compute_digest
+        body = bytes(data) if isinstance(data, (bytes, bytearray)) else data.read()
 
-        if isinstance(data, (bytes, bytearray)):
-            body = bytes(data)
-            content_length = len(body)
-        else:
-            body = data.read()
-            content_length = len(body)
-
-        if want_digest:
-            if want_digest is True:
-                want_digest = {"sha-256": 10}
-            elif isinstance(want_digest, (list, tuple)):
-                want_digest = dict.fromkeys(want_digest, 10)
-            content_digest = {}
-            for alg in sorted(want_digest.keys()):
-                if want_digest[alg] > 0:
-                    content_digest[alg] = compute_digest(alg, body)
-            if complete:
-                want_repr_digest = want_digest
-
-        headers: dict[str, str] = {
-            **draft_interop_headers(),
-            "Upload-Complete": build_upload_complete_header(complete),
-            "Content-Length": str(content_length),
-        }
-
-        if content_digest:
-            headers["Content-Digest"] = build_content_digest_header(content_digest)
-
-        if repr_digest:
-            headers["Repr-Digest"] = build_repr_digest_header(repr_digest)
-
-        if want_repr_digest:
-            headers["Want-Repr-Digest"] = build_want_repr_digest_header(want_repr_digest)
-
-        if want_content_digest:
-            headers["Want-Content-Digest"] = build_want_content_digest_header(want_content_digest)
-
-        if length is not None:
-            headers["Upload-Length"] = build_upload_length_header(length)
-        elif complete and content_length > 0:
-            headers["Upload-Length"] = build_upload_length_header(content_length)
-
-        if content_type is not None:
-            headers["Content-Type"] = content_type
-
-        if extra_headers:
-            headers.update(extra_headers)
+        headers = self._prepare_creation_headers(
+            body=body,
+            complete=complete,
+            length=length,
+            content_type=content_type,
+            extra_headers=extra_headers,
+            content_digest=content_digest,
+            repr_digest=repr_digest,
+            want_repr_digest=want_repr_digest,
+            want_content_digest=want_content_digest,
+            want_digest=want_digest,
+        )
 
         logger.debug("Creating upload: %s %s (complete=%s)", method, url, complete)
 
@@ -291,72 +256,12 @@ class RufhClient:
 
         captured_interim = list(self._interim_responses)
 
-        if response.status_code == 104:
-            raise UploadCreationError("Received unexpected 104 as final response", status_code=104)
-
-        if 400 <= response.status_code < 500:
-            self._raise_for_problem(response, UploadCreationError)
-            raise UploadCreationError(
-                f"Upload creation rejected: {response.status_code}",
-                status_code=response.status_code,
-            )
-
-        if response.status_code >= 500:
-            raise UploadCreationError(
-                f"Server error during upload creation: {response.status_code}",
-                status_code=response.status_code,
-            )
-
-        location = parse_location(response.headers)
-        upload_complete_header = parse_upload_complete(response.headers)
-        upload_offset = parse_upload_offset(response.headers)
-        upload_length = parse_upload_length(response.headers)
-        limits = parse_upload_limits(response.headers)
-
-        interim_location = self._first_interim_location(captured_interim)
-        interim_limits: UploadLimits | None = self._latest_interim_limits(captured_interim)
-
-        if location is None and interim_location is not None:
-            location = interim_location
-            logger.debug("Using Location from 104 interim response: %s", location)
-
-        if limits is None and interim_limits is not None:
-            limits = interim_limits
-
-        is_complete = upload_complete_header is True
-
-        if is_complete:
-            upload_uri = location or url
-            resource = UploadResource(
-                uri=upload_uri,
-                offset=upload_offset if upload_offset is not None else content_length,
-                complete=True,
-                length=upload_length or length or content_length,
-                limits=limits,
-                final_response=response,
-            )
-            return UploadCreationResult(
-                upload_resource=resource,
-                final_response=response,
-                interim_responses=captured_interim,
-            )
-
-        if location is None:
-            raise UploadCreationError(
-                "Server did not return a Location header for the upload resource"
-            )
-
-        offset = upload_offset if upload_offset is not None else content_length
-        resource = UploadResource(
-            uri=location,
-            offset=offset,
-            complete=False,
-            length=upload_length or length,
-            limits=limits,
-        )
-        return UploadCreationResult(
-            upload_resource=resource,
-            interim_responses=captured_interim,
+        return self._handle_creation_response(
+            response=response,
+            url=url,
+            length=length,
+            content_length=len(body),
+            captured_interim=captured_interim,
         )
 
     # ------------------------------------------------------------------
@@ -817,6 +722,142 @@ class RufhClient:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _prepare_creation_headers(
+        body: bytes,
+        complete: bool,
+        length: int | None,
+        content_type: str | None,
+        extra_headers: dict[str, str] | None,
+        content_digest: dict[str, bytes] | None,
+        repr_digest: dict[str, bytes] | None,
+        want_repr_digest: dict[str, int] | None,
+        want_content_digest: dict[str, int] | None,
+        want_digest: bool | list[str] | tuple[str, ...] | dict[str, int] | None,
+    ) -> dict[str, str]:
+        from .headers import compute_digest
+
+        content_length = len(body)
+
+        if want_digest:
+            if want_digest is True:
+                want_digest = {"sha-256": 10}
+            elif isinstance(want_digest, (list, tuple)):
+                want_digest = dict.fromkeys(want_digest, 10)
+            content_digest = {}
+            for alg in sorted(want_digest.keys()):
+                if want_digest[alg] > 0:
+                    content_digest[alg] = compute_digest(alg, body)
+            if complete:
+                want_repr_digest = want_digest
+
+        headers: dict[str, str] = {
+            **draft_interop_headers(),
+            "Upload-Complete": build_upload_complete_header(complete),
+            "Content-Length": str(content_length),
+        }
+
+        if content_digest:
+            headers["Content-Digest"] = build_content_digest_header(content_digest)
+
+        if repr_digest:
+            headers["Repr-Digest"] = build_repr_digest_header(repr_digest)
+
+        if want_repr_digest:
+            headers["Want-Repr-Digest"] = build_want_repr_digest_header(want_repr_digest)
+
+        if want_content_digest:
+            headers["Want-Content-Digest"] = build_want_content_digest_header(want_content_digest)
+
+        if length is not None:
+            headers["Upload-Length"] = build_upload_length_header(length)
+        elif complete and content_length > 0:
+            headers["Upload-Length"] = build_upload_length_header(content_length)
+
+        if content_type is not None:
+            headers["Content-Type"] = content_type
+
+        if extra_headers:
+            headers.update(extra_headers)
+
+        return headers
+
+    def _handle_creation_response(
+        self,
+        response: httpx.Response,
+        url: str,
+        length: int | None,
+        content_length: int,
+        captured_interim: list[InterimResponse],
+    ) -> UploadCreationResult:
+        if response.status_code == 104:
+            raise UploadCreationError("Received unexpected 104 as final response", status_code=104)
+
+        if 400 <= response.status_code < 500:
+            self._raise_for_problem(response, UploadCreationError)
+            raise UploadCreationError(
+                f"Upload creation rejected: {response.status_code}",
+                status_code=response.status_code,
+            )
+
+        if response.status_code >= 500:
+            raise UploadCreationError(
+                f"Server error during upload creation: {response.status_code}",
+                status_code=response.status_code,
+            )
+
+        location = parse_location(response.headers)
+        upload_complete_header = parse_upload_complete(response.headers)
+        upload_offset = parse_upload_offset(response.headers)
+        upload_length = parse_upload_length(response.headers)
+        limits = parse_upload_limits(response.headers)
+
+        interim_location = self._first_interim_location(captured_interim)
+        interim_limits: UploadLimits | None = self._latest_interim_limits(captured_interim)
+
+        if location is None and interim_location is not None:
+            location = interim_location
+            logger.debug("Using Location from 104 interim response: %s", location)
+
+        if limits is None and interim_limits is not None:
+            limits = interim_limits
+
+        is_complete = upload_complete_header is True
+
+        if is_complete:
+            upload_uri = location or url
+            resource = UploadResource(
+                uri=upload_uri,
+                offset=upload_offset if upload_offset is not None else content_length,
+                complete=True,
+                length=upload_length or length or content_length,
+                limits=limits,
+                final_response=response,
+            )
+            return UploadCreationResult(
+                upload_resource=resource,
+                final_response=response,
+                interim_responses=captured_interim,
+            )
+
+        if location is None:
+            raise UploadCreationError(
+                "Server did not return a Location header for the upload resource"
+            )
+
+        offset = upload_offset if upload_offset is not None else content_length
+        resource = UploadResource(
+            uri=location,
+            offset=offset,
+            complete=False,
+            length=upload_length or length,
+            limits=limits,
+        )
+        return UploadCreationResult(
+            upload_resource=resource,
+            interim_responses=captured_interim,
+        )
 
     @staticmethod
     def _first_interim_location(

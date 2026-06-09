@@ -87,12 +87,16 @@ async def create_upload(request: Request, upload_uri: str) -> Response:
         )
     except DigestMismatchError as e:
         import base64
+        import json
 
-        body = (
-            f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch",'
-            f'"title":"Digest mismatch","algorithm":"{e.algorithm}",'
-            f'"expected":"{base64.b64encode(e.expected).decode()}",'
-            f'"actual":"{base64.b64encode(e.actual).decode()}"}}'
+        body = json.dumps(
+            {
+                "type": "https://iana.org/assignments/http-problem-types#digest-mismatch",
+                "title": "Digest mismatch",
+                "algorithm": e.algorithm,
+                "expected": base64.b64encode(e.expected).decode(),
+                "actual": base64.b64encode(e.actual).decode(),
+            }
         ).encode()
         return Response(content=body, status_code=400, media_type="application/problem+json")
 
@@ -210,10 +214,15 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
             media_type="application/problem+json",
         )
     except UploadOffsetMismatchError as e:
-        body = (
-            f'{{"type":"https://iana.org/assignments/http-problem-types#mismatching-upload-offset",'
-            f'"title":"Offset mismatch","expected-offset":{e.expected_offset},'
-            f'"provided-offset":{e.provided_offset}}}'
+        import json
+
+        body = json.dumps(
+            {
+                "type": "https://iana.org/assignments/http-problem-types#mismatching-upload-offset",
+                "title": "Offset mismatch",
+                "expected-offset": e.expected_offset,
+                "provided-offset": e.provided_offset,
+            }
         ).encode()
         return Response(content=body, status_code=409, media_type="application/problem+json")
     except UploadAlreadyCompleteError:
@@ -230,12 +239,16 @@ async def append_upload(request: Request, upload_uri: str) -> Response:
         )
     except DigestMismatchError as e:
         import base64
+        import json
 
-        body = (
-            f'{{"type":"https://iana.org/assignments/http-problem-types#digest-mismatch",'
-            f'"title":"Digest mismatch","algorithm":"{e.algorithm}",'
-            f'"expected":"{base64.b64encode(e.expected).decode()}",'
-            f'"actual":"{base64.b64encode(e.actual).decode()}"}}'
+        body = json.dumps(
+            {
+                "type": "https://iana.org/assignments/http-problem-types#digest-mismatch",
+                "title": "Digest mismatch",
+                "algorithm": e.algorithm,
+                "expected": base64.b64encode(e.expected).decode(),
+                "actual": base64.b64encode(e.actual).decode(),
+            }
         ).encode()
         return Response(content=body, status_code=400, media_type="application/problem+json")
 

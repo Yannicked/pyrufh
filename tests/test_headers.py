@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from pyrufh.headers import (
+    DRAFT_INTEROP_VERSION,
     UploadLimits,
     build_content_digest_header,
     build_repr_digest_header,
@@ -13,8 +14,12 @@ from pyrufh.headers import (
     build_upload_length_header,
     build_upload_offset_header,
     build_want_content_digest_header,
+    build_want_digest_header,
+    build_want_repr_digest_header,
     compute_digest,
+    draft_interop_headers,
     parse_content_digest,
+    parse_location,
     parse_repr_digest,
     parse_upload_complete,
     parse_upload_length,
@@ -27,6 +32,16 @@ from pyrufh.headers import (
 
 def make_headers(**kwargs: str) -> httpx.Headers:
     return httpx.Headers(kwargs)
+
+
+class TestParseLocation:
+    def test_present(self):
+        h = make_headers(**{"location": "https://example.com/upload/123"})
+        assert parse_location(h) == "https://example.com/upload/123"
+
+    def test_missing(self):
+        h = make_headers()
+        assert parse_location(h) is None
 
 
 class TestParseUploadOffset:
@@ -197,8 +212,23 @@ class TestDigestBuilding:
         assert parsed is not None
         assert parsed["sha-256"] == sha256
 
-    def test_build_want_digest_header(self):
+    def test_build_want_content_digest_header(self):
         header = build_want_content_digest_header({"sha-256": 10, "sha-512": 5})
+        assert "sha-256=10" in header
+        assert "sha-512=5" in header
+
+    def test_build_want_digest_header(self):
+        # Empty dict
+        assert build_want_digest_header({}) == ""
+        # Single element
+        assert build_want_digest_header({"sha-256": 10}) == "sha-256=10"
+        # Multiple elements (sorting test)
+        header = build_want_digest_header({"sha-512": 5, "sha-256": 10, "md5": 0})
+        # The keys should be sorted alphabetically: md5, sha-256, sha-512
+        assert header == "md5=0, sha-256=10, sha-512=5"
+
+    def test_build_want_repr_digest_header(self):
+        header = build_want_repr_digest_header({"sha-256": 10, "sha-512": 5})
         assert "sha-256=10" in header
         assert "sha-512=5" in header
 
@@ -237,3 +267,7 @@ class TestComputeDigest:
     def test_unsupported_algorithm(self):
         with pytest.raises(ValueError, match="Unsupported"):
             compute_digest("unknown-algo", b"data")
+
+
+def test_draft_interop_headers():
+    assert draft_interop_headers() == {"Upload-Draft-Interop-Version": str(DRAFT_INTEROP_VERSION)}
