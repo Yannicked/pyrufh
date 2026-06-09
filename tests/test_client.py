@@ -246,6 +246,26 @@ class TestOffsetRetrieval:
             with pytest.raises(OffsetRetrievalError):
                 client.get_offset(resource)
 
+    def test_network_error_raises(self, httpx_mock: HTTPXMock):
+        import httpx
+
+        request = httpx.Request("HEAD", UPLOAD_RESOURCE_URI)
+        httpx_mock.add_exception(
+            httpx.RequestError("Network error", request=request),
+            method="HEAD",
+            url=UPLOAD_RESOURCE_URI,
+        )
+
+        with RufhClient() as client:
+            from pyrufh import UploadResource
+
+            resource = UploadResource(uri=UPLOAD_RESOURCE_URI)
+            with pytest.raises(
+                OffsetRetrievalError,
+                match="Network error during offset retrieval: Network error",
+            ):
+                client.get_offset(resource)
+
     def test_redirect_followed(self, httpx_mock: HTTPXMock):
         new_uri = "https://example.com/uploads/redirected"
         httpx_mock.add_response(
